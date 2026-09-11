@@ -13,7 +13,9 @@ Background on *why* each choice was made: [context/notes.md](../context/notes.md
 Output byte-identical to `git log --all -S <needle>` — same commits, same order.
 
 - **Filter is conservative.** Every occurrence that changes a count lies wholly inside
-  a `+`/`-` line (proof: §2.1), so the commit has all of the needle's trigrams.
+  a `+`/`-` line (proof: §2.1), so the commit has all of the needle's trigrams. The one
+  exception is content inside a binary filepair, which the textual diff never shows and
+  the pickaxe searches anyway (spikes.md S6); those commits are always candidates.
 - **Verification is exact.** Git itself is the verifier (§2.2).
 
 **Bail out** (print a notice, exec real `git log -S`) when: needle < 3 bytes · needle
@@ -31,6 +33,15 @@ are present in both preimage and postimage, so they cancel. Therefore any per-fi
 change is caused by an occurrence lying entirely within an added or removed line — which
 is exactly what we index. No false negatives.
 
+**The argument assumes the diff shows everything that changed, and for binary files it
+does not.** `git diff -U0` prints `Binary files ... differ` with no content lines, while
+`diffcore_pickaxe` reads the blob itself and matches inside it regardless (measured,
+spikes.md S6). Indexing the textual diff alone therefore *would* miss a needle that only
+occurs in binary content. The fix is not to index it — `--text` on a vendored PNG is one
+enormous line of noise — but to recognise the marker while parsing and add the commit's
+ordinal to the always-candidate list (§4). Verification then decides. On git.git this
+affects 35 of 64,022 non-merge commits, 0.05%.
+
 ### 2.2 Verification = one batched `git log --no-walk`
 
 Do **not** reimplement pickaxe counting for v1. After intersection we hold ~40 candidate
@@ -42,6 +53,9 @@ printf '%s\n' <shas...> | git log --stdin --no-walk -S <needle> --format=%H
 
 Git applies its own pickaxe to exactly those commits and prints the survivors. Correct by
 construction — no per-file delta logic, no rename edge cases, no overlapping-match bugs.
+**Pass no diff options to this call.** In particular not `--no-renames`: with it, git
+reports a commit that merely moved the needle between files, and plain `git log -S` does
+not (spikes.md S4). The index is built one way and verified the other on purpose.
 One process, not 40. Feed the SHAs in descending-ordinal order and git's output is already
 in `git log --all -S` order (§2.4), so print it straight through, enriched from the commit
 table.
@@ -121,13 +135,21 @@ reachable, and require a full `pk index`.
 
 ### 2.5 Build is an external sort
 
-500k commits × ~1500 distinct trigrams ≈ 750M keys × 8 B ≈ 6 GB — does not fit in RAM.
+Measured on git.git: 3.0 kB of keys per commit (spikes.md S5), so ~1.5 GB at 500k commits
+and ~3.9 GB at 1.3M — less than the 6 GB this section originally assumed, but still past
+the point where holding every key in RAM is sensible.
 
-Commits are split into fixed **chunks of contiguous ordinals**. Each chunk produces one
-run of `u64 key = (tri << 32) | ordinal`, radix-sorted and spilled to a temp file. Because
-chunk ordinal ranges are disjoint and ascending, the final merge for a given trigram is a
-plain **ordered concatenation** of the runs — no comparison merge needed inside a trigram.
+Commits are split into **chunks of contiguous ordinals**. Each chunk produces one run of
+`u64 key = (tri << 32) | ordinal`, radix-sorted and spilled to a temp file. Because chunk
+ordinal ranges are disjoint and ascending, the final merge for a given trigram is a plain
+**ordered concatenation** of the runs — no comparison merge needed inside a trigram.
 Streams straight into the delta-varint writer. Memory stays at one chunk per worker.
+
+**Cut chunks on a key budget, not a commit count.** Commits span 3.0 kB of keys on average
+and 400 kB at the worst, a 3,000× spread, so a fixed number of commits per chunk makes peak
+memory unpredictable. Fill the buffer until it reaches its byte limit and cut there. The
+ordinal ranges stay contiguous and disjoint, which is all the concatenation argument
+above needs.
 
 ### 2.6 Merge commits
 
@@ -145,8 +167,10 @@ byte-identical output. `--first-parent` / `-m` are non-goals.
 ```
 CMakeLists.txt  CMakePresets.json  .clang-format  .clang-tidy  .gitignore
 src/
-  main.cpp                 # arg parse + subcommand dispatch, thin
+  main.cpp                 # subcommand dispatch and exit codes only
   pk/
+    cli.{hpp,cpp}          # argv -> Options; in the library so it is testable
+    version.hpp/.cpp       # git describe, baked in at configure time
     subprocess.{hpp,cpp}   # posix_spawn + pipe, streaming stdout reader
     git.{hpp,cpp}          # rev_list_all, log_stream, verify_batch
     diff_parser.{hpp,cpp}  # NUL-delimited -U0 stream -> CommitRecord
@@ -159,10 +183,14 @@ src/
     mmap_file.{hpp,cpp}    # RAII mmap
     intersect.{hpp,cpp}    # rarest-first galloping intersection
     query.{hpp,cpp}        # needle -> candidates -> verify -> print
-tests/{unit,integration,fixtures}/
+tests/
+  unit/                    # one function, no I/O
+  integration/             # git_assumptions_test.sh pins the spike findings
+  fixtures/make_repo.sh    # synthetic repos: merges, renames, binary, root commit
+tools/spike_trigram_stats.py # phase-1 measurement harness; `pk stats` replaces it
 bench/run.sh
 docker/Dockerfile
-plans/plan.md  context/notes.md  README.md
+plans/plan.md  context/notes.md  context/spikes.md  README.md
 ```
 
 `libpk` is a static library holding everything under `src/pk/`; `pk` is a thin executable
@@ -181,7 +209,7 @@ and 8-byte aligned.
 ```
 header       magic "PKIX" · version · flags(no_renames, merges_indexed) · context_lines
              commit_count · trigram_count · section offsets · stopword_count
-             indexed ref tips (staleness check + gap query) · dense-commit list · repo path
+             indexed ref tips (staleness check + gap query) · always-candidate list · repo path
 directory    u32 tri[N]  ·  u64 post_off[N+1]  ·  u32 post_count[N]   (SoA, tri ascending)
 postings     varint(first_ordinal), then varint(delta) per subsequent ordinal
 commit_table ordinal -> { u8 oid[20], i64 time, u32 author_off, u32 subject_off }  (40 B)
@@ -189,28 +217,43 @@ strings      NUL-terminated authors + subjects
 stopwords    sorted u32[]
 ```
 
-Directory lookup is a binary search over `tri[]` (≤24 probes; a query has ~10–30
-trigrams, so this is free). A 2^24 direct table would cost ~200 MB — rejected.
+Directory lookup is a binary search over `tri[]` (≤24 probes, 18 on git.git's measured
+249,005 distinct trigrams; a query has ~10–30 trigrams, so this is free). A 2^24 direct
+table would cost ~200 MB — rejected.
 
 A full index is one file; `pk update` adds `pk-index.1`, `.2`, … segments until `pk compact`.
 
-**Sizing model.** postings ≈ commits × distinct trigrams per commit after culling, at
-roughly 1.2 bytes each once delta-varint'd.
+**Sizing, measured.** Built over git.git's whole history and serialized for real
+(spikes.md S5), before any stopword cull:
 
-| commits | postings (~750/commit) | index on disk | raw keys during build (8 B each) |
+| | git.git, 85,615 commits |
+|---|---|
+| distinct trigrams per commit | 373 mean, 129 median, 50,308 worst |
+| postings | 32.0M |
+| postings on disk | 37.4 MB, at **1.17 B/posting** |
+| directory + commit table | 4.0 MB + 3.4 MB |
+| **index total** | **44.8 MB**, 14% of the 316 MB pack beside it |
+| raw keys during the build | 0.26 GB, 3.0 kB per commit |
+
+Scaling the measured per-commit figures, and taking the ≈25% cull that a >10% stopword
+threshold delivers:
+
+| commits | postings | index on disk | raw keys during build |
 |---|---|---|---|
-| 100k | 75M | ~90 MB | 1.2 GB |
-| 500k | 375M | ~450 MB | 6 GB |
-| 1.3M | ~1B | ~1.2 GB | 15.6 GB |
+| 100k | 37M | ~40 MB | 0.3 GB |
+| 500k | 187M | ~190 MB | 1.5 GB |
+| 1.3M | 485M | ~500 MB | 3.9 GB |
 
-The right-hand column is why the build is an external sort (§2.5). These are estimates to
-size buffers with. Measure and publish the real numbers; do not quote these.
+The right-hand column is why the build is an external sort (§2.5). Re-measure per repo
+rather than trusting these across ecosystems: a Java or JavaScript monorepo has different
+line lengths and a different trigram curve than git.git's C.
 
 **Is that size acceptable?** On disk yes, in RAM it barely registers. The file is mmap'd and
 a query touches only its header, a few directory pages and a few posting lists, so resident
-memory stays in the low MB no matter how big the file is. On disk it lands at roughly a
-quarter of the packed repo sitting next to it, it is derived data under `.git/`, it is never
-committed or pushed, and deleting it costs a rebuild and nothing else.
+memory stays in the low MB no matter how big the file is. On disk it measured **14% of the
+pack sitting next to it** on git.git, better than the quarter this section first guessed. It
+is derived data under `.git/`, it is never committed or pushed, and deleting it costs a
+rebuild and nothing else.
 
 The real risk is the **build's transient**, not the steady state. Check free space before
 starting, honour `--tmpdir`, run the counting pass and cull *before* spilling keys, and clean
@@ -218,11 +261,20 @@ up runs in a destructor. If a user is still space-constrained, the stopword cull
 the knob: culling harder shrinks the index and admits more candidates, trading index size for
 query time.
 
-**Dense-commit cap.** One commit importing a vendored tree can contribute millions of
-distinct trigrams, as much as thousands of ordinary commits, and it filters nothing. Commits
-exceeding K distinct trigrams (start at K = 50k) are not indexed; their ordinals go in an
-"always a candidate" list in the header. Correctness holds because they are still verified.
-Cheap, and it removes the worst of the tail.
+**The always-candidate list.** Two kinds of commit go in it instead of being indexed, and
+both stay correct because verification still sees them:
+
+- **Dense commits.** One commit importing a vendored tree can contribute millions of
+  distinct trigrams, as much as thousands of ordinary commits, while filtering nothing.
+  Cap at K distinct trigrams. **K = 10,000**, not the 50k first guessed here: on git.git
+  50k catches a single commit, while 10k catches 44 (0.07% of history) holding 2.0% of all
+  postings (spikes.md S5).
+- **Commits touching a binary filepair.** Their content is invisible to `-U0` and still
+  searched by the pickaxe, so indexing cannot see what git will match (spikes.md S6).
+  35 commits on git.git, 0.05%.
+
+Both are cheap, and between them they remove the worst of the tail and close the only hole
+in §2.1.
 
 ---
 
@@ -233,7 +285,7 @@ Each phase ends with a green build, green `ctest`, and a committed exit check.
 | # | Deliverable | Exit criterion | Est |
 |---|---|---|---|
 | 0 | Skeleton: CMake, presets, gtest, clang-format, .gitignore, Dockerfile, CI | `cmake --preset dev && cmake --build --preset dev && ctest --preset dev` green | 1.0h |
-| 1 | **Spikes** (§7) — S1/S2 already answered; settle S3–S5 | spikes.md complete; one regression test per finding | 0.5h |
+| 1 | **Spikes** (§7) — all six resolved, S6 found a correctness hole | spikes.md complete; one regression test per finding | 0.5h |
 | 2 | `subprocess` + `git` + `diff_parser`; hidden `pk scan` prints stats | commit count on git.git == `git rev-list --all --count` | 2.0h |
 | 3 | Trigram extraction, counting pass, stopword selection; `pk stats` | top-50 histogram printed; cull threshold justified | 1.0h |
 | 4 | Radix sort, runs, merge, serialize, mmap read-back | round-trip test; `pk index .` on git.git succeeds; size + time reported | 2.0h |
@@ -267,12 +319,19 @@ older than HEAD, needle shorter than 3 bytes.
 Answer each with a real command against a real repo; append findings to
 [context/spikes.md](../context/spikes.md).
 
-S1 (merges), S2 (batched `--no-walk` verification) and S3 (ordering) are **already resolved**
-there. Turn each into a regression test in phase 1 rather than re-investigating. Remaining:
+**All resolved.** S1 (merges), S2 (batched `--no-walk` verification) and S3 (ordering) were
+answered before phase 1; S4 (renames), S5 (measurement) and S6 landed in it. Each is pinned
+by an assertion in `tests/integration/git_assumptions_test.sh`.
 
-4. Rename-with-content-change: confirm `--no-renames` changed lines ⊇ default changed lines.
-5. Measure: distinct trigrams per commit and the frequency curve on git.git, to size
-   the stopword cull and the chunk buffer.
+Two changed the design rather than confirming it:
+
+- **S6**, which was not on this list, found that the pickaxe searches binary blobs the
+  textual diff never shows — a false negative, fixed by the always-candidate list (§2.1, §4).
+- **S5** measured the index at roughly a third of the size assumed here, and moved the
+  dense-commit cap from 50k to 10k and the stopword cull to >10% of commits (§4).
+
+The numbers behind S5 come from `tools/spike_trigram_stats.py`, which `pk stats` replaces in
+phase 3.
 
 ---
 

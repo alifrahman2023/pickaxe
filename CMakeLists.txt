@@ -62,4 +62,15 @@ if(PK_BUILD_TESTS)
 
   include(GoogleTest)
   gtest_discover_tests(pk_tests)
+
+  # Spike regressions (context/spikes.md). These assert on git's own behaviour,
+  # which the index format and the verification strategy are built on top of.
+  find_program(PK_BASH bash)
+  if(PK_BASH)
+    add_test(NAME git_assumptions
+      COMMAND "${PK_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/git_assumptions_test.sh")
+    set_tests_properties(git_assumptions PROPERTIES LABELS integration TIMEOUT 180)
+  else()
+    message(WARNING "bash not found; the spike regression tests will not run")
+  endif()
 endif()
