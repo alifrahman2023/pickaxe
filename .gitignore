@@ -1,0 +1,15 @@
+# Build trees (one per preset) — disposable, never committed.
+build/
+_deps/
+
+# clangd / IDE
+compile_commands.json
+.cache/
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Local benchmark scratch
+bench/out/

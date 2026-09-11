@@ -1,0 +1,14 @@
+# Static analysis. Start broad, silence individual checks as they prove noisy.
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -bugprone-easily-swappable-parameters
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'src/pk/.*'
+FormatStyle: file
