@@ -7,9 +7,10 @@ The contract is strict: **output byte-identical to `git log --all -S <needle>`**
 commits, same order. The index is only ever a filter. Git itself does the verifying, so a
 wrong answer would have to be git's.
 
-> **Status: phase 0 of 8.** The skeleton builds, the test suite is green, and the CLI
-> parses. No indexing or querying is implemented yet — every subcommand says which phase
-> it lands in. See [plans/plan.md](plans/plan.md).
+> **Status: phase 2 of 8.** The git plumbing works: `pk scan` streams a repo's whole
+> history through the diff parser and agrees with `git rev-list --all --count`, at 4,554
+> commits a second on git.git. Nothing is indexed or queried yet — every other subcommand
+> says which phase it lands in. See [plans/plan.md](plans/plan.md).
 
 ## How it works
 

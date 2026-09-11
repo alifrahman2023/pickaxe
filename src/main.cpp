@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "pk/cli.hpp"
+#include "pk/scan.hpp"
 #include "pk/version.hpp"
 
 namespace {
@@ -12,6 +13,17 @@ namespace {
 constexpr int kOk = 0;
 constexpr int kFailed = 1;
 constexpr int kUsageError = 2;
+
+int run_scan(const pk::Options& opt) {
+  pk::ScanStats stats;
+  std::string error;
+  if (!pk::scan(opt.repo, stats, error)) {
+    std::fprintf(stderr, "pk: %s\n", error.c_str());
+    return kFailed;
+  }
+  pk::print_scan(stats, stdout);
+  return stats.counts_agree() ? kOk : kFailed;
+}
 
 int not_implemented(std::string_view what, int phase) {
   std::fprintf(stderr, "pk: %.*s is not implemented yet (plan phase %d)\n",
@@ -38,7 +50,7 @@ int main(int argc, char** argv) {
                    pk::version().data());
       return kOk;
     case pk::Command::Scan:
-      return not_implemented("scan", 2);
+      return run_scan(opt);
     case pk::Command::Stats:
       return not_implemented("stats", 3);
     case pk::Command::Index:

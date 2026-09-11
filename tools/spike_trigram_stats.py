@@ -111,6 +111,8 @@ def main() -> int:
     for raw in proc.stdout:
         line = raw.rstrip(b"\n")
         if pending > 0:
+            if line[:1] == b"\\":
+                continue  # "\ No newline at end of file" is outside the counts
             pending -= 1
             if line[:1] in (b"+", b"-"):
                 body = line[1:]

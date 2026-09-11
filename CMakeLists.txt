@@ -29,6 +29,10 @@ set(PK_WARNINGS -Wall -Wextra -Wpedantic -Wconversion)
 # --- the library: all real logic lives here ---------------------------------
 add_library(pklib
   src/pk/cli.cpp
+  src/pk/diff_parser.cpp
+  src/pk/git.cpp
+  src/pk/scan.cpp
+  src/pk/subprocess.cpp
   src/pk/version.cpp)
 target_include_directories(pklib PUBLIC src)
 target_compile_options(pklib PRIVATE ${PK_WARNINGS})
@@ -56,7 +60,13 @@ if(PK_BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 
   enable_testing()
-  add_executable(pk_tests tests/unit/cli_test.cpp)
+  add_executable(pk_tests
+    tests/unit/cli_test.cpp
+    tests/unit/line_splitter_test.cpp
+    tests/unit/diff_parser_test.cpp
+    tests/integration/git_stream_test.cpp)
+  target_compile_definitions(pk_tests PRIVATE
+    PK_FIXTURE_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/make_repo.sh")
   target_compile_options(pk_tests PRIVATE ${PK_WARNINGS})
   target_link_libraries(pk_tests PRIVATE pklib GTest::gtest_main)
 

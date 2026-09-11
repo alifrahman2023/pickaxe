@@ -156,6 +156,13 @@ Serialized size, delta-varint'd, measured rather than assumed:
 | commit table | 3.4 MB | 40 B × 85.6k commits |
 | **total** | **44.8 MB** | **14% of the 316 MB pack beside it** |
 
+> **Correction, found in phase 2.** The harness consumed `\ No newline at end of file` as
+> a hunk body line, so it dropped the last content line of every hunk that ends in one.
+> Against the C++ parser, which counts correctly, the figures above understate changed
+> lines by 518 of 8,054,050 and changed bytes by 16,909 of 258,107,985 — 0.006%, immaterial
+> to every conclusion here. The harness is fixed; the tables are left as measured rather
+> than re-run.
+
 Raw keys during the build come to 0.26 GB, not the 6 GB the plan's model implies for this
 size. Extrapolating the measured 3.0 kB of keys per commit: ~1.5 GB at 500k commits,
 ~3.9 GB at 1.3M. The external sort earns its keep on linux and llvm-project; a
@@ -223,6 +230,28 @@ commit's ordinal in the always-a-candidate list the dense-commit cap already nee
 (plan §4). Verification then decides, exactly as it does for dense commits. Cost on
 git.git is 35 extra SHAs in one batched call, which is unmeasurable. Plan §2.1 and §4
 updated.
+
+## Phase-2 cross-check
+
+`pk scan`, the same traversal in C++, over the same 85,615 commits:
+
+| | |
+|---|---|
+| commits seen / `git rev-list --all --count` | 85,615 / 85,615 |
+| malformed hunk headers | 0 |
+| filepairs | 142,529 |
+| lines added / removed | 4,874,147 / 3,179,903 |
+| changed bytes | 258,107,985 |
+| widest single commit | 265,598 lines, 10.0 MB |
+| elapsed, release build | 18.8 s — 4,554 commits/s |
+
+Two definitions differ from S5's and neither is a disagreement. S5 counted 118 commits with
+no *trigrams*; `pk scan` counts 53 with no *changed lines*. The 65 in between change only
+lines shorter than three bytes, so they hold no trigram and cannot match a needle of three
+bytes or more. They are correctly left unindexed and are not candidates.
+
+The 18.8 s is the floor for a single-threaded index build: it is what git costs to produce
+the diffs, before pk extracts a single trigram.
 
 ---
 

@@ -174,6 +174,7 @@ src/
     subprocess.{hpp,cpp}   # posix_spawn + pipe, streaming stdout reader
     git.{hpp,cpp}          # rev_list_all, log_stream, verify_batch
     diff_parser.{hpp,cpp}  # NUL-delimited -U0 stream -> CommitRecord
+    scan.{hpp,cpp}         # `pk scan`: one traversal, stats, count cross-check
     trigram.hpp            # extraction + per-commit dedupe (bitset)
     varint.hpp             # LEB128 encode/decode
     radix_sort.hpp         # LSD u64, 8 bits/pass
