@@ -69,6 +69,8 @@ Link flags: `-O3 -DNDEBUG -Wl,-search_paths_first -Wl,-headerpad_max_install_nam
 `file build/pk` reported a Mach-O 64-bit arm64 executable. `otool -L build/pk`
 reported only the ordinary C++/C runtimes above. No checksum dependency is used
 in this slice; vendoring/using XXH64 belongs to the later index-format work.
+The tested executable SHA-256 was
+`a6a5ca5fda5fc83abcef8a3c11835c762fb1d6edabb6140da125cd06ef73e8b3`.
 
 ## Actual checks
 
@@ -106,7 +108,29 @@ in this slice; vendoring/using XXH64 belongs to the later index-format work.
 
 ## Code review
 
-Standards and Spec reviews pending at the initial implementation commit.
+Applied the code-review skill with two independent parallel reviewers against
+`ab5aaff526cbda6ee55b174ab76ff10f2ff247d6...7f25f5886358c11ecc4e89ade32837d182801f77`.
+The commit was `7f25f58 Implement complete Git-backed search for #16`.
+Only this evidence record changes after review.
+
+### Standards
+
+No findings. The diff follows the repository's documented guidance and glossary,
+uses the approved CLI testing seam, and keeps unrelated local guidance outside
+the commit. The small process-replacement implementation has no actionable
+baseline smells. **0 documented violations, 0 smell findings.**
+
+### Spec
+
+Pass, **0 findings**. The baseline build/install, direct reference invocation,
+one-time PATH lookup, argument ownership, inherited inputs, stdout/status,
+diagnostics, and basic cancellation satisfy #16. No index operations or
+acceleration were added. The reviewer independently reran the baseline CTest
+entry and all 10 checks passed. Broader evidence remains assigned to #17/#18.
+
+Standards: 0 findings; Spec: 0 findings; neither axis has an outstanding issue.
+Final SHA-256 verification confirmed the preserved pre-existing local files were
+unchanged; only the five explicit ticket paths are committed.
 
 ## Pending evidence and next ticket
 
