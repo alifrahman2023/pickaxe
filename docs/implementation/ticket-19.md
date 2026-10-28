@@ -246,3 +246,9 @@ or close the issue. Next ticket, **not started**:
 Replay/order/format equivalence, early eligibility/publication investigations,
 production bounded extraction, all later qualification fixtures/generator,
 resource/publication audits, measurements and Linux qualification remain pending.
+
+
+Continuation: the owner subsequently authorized implementing #20 atop this
+completed, reviewed evidence in the same branch/draft PR. See the
+[ticket #20 gate report](ticket-20.md) for that continuation and current handoff.
+The #19 archive remains the historical five-check/version-1 fixture evidence.

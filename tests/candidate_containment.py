@@ -1,4 +1,4 @@
-"""Ticket #19: independent Git oracles at the approved candidate-trace seam."""
+"""Tickets #19–20: independent containment and ordered-replay feasibility."""
 import argparse
 import hashlib
 import json
@@ -38,24 +38,29 @@ class Containment(unittest.TestCase):
         if ARGS.evidence_dir:
             self.addCleanup(self.save)
 
-    def git(self, *args, input=None, cwd=None):
+    def run_git(self, *args, input=None, cwd=None):
         result = subprocess.run([GIT, *args], cwd=cwd or self.repo, env=self.env,
                                 input=input, capture_output=True, timeout=10)
         self.commands.append(dict(argv_hex=[os.fsencode(a).hex() for a in [GIT, *args]],
                                   cwd=str(cwd or self.repo), stdin_hex=None if input is None else input.hex(),
                                   status=result.returncode, stdout_hex=result.stdout.hex(),
                                   stderr_hex=result.stderr.hex()))
+        return result
+
+    def git(self, *args, **kwargs):
+        result = self.run_git(*args, **kwargs)
         if result.returncode:
             raise RuntimeError(f'Git failed: {args!r}: {result.stderr!r}')
         return result.stdout
 
     def save(self):
         self.git('config', '--show-origin', '--show-scope', '--list')
-        self.git('show-ref', '--head')
+        self.run_git('show-ref', '--head')
         ARGS.evidence_dir.mkdir(parents=True, exist_ok=True)
-        sources = [Path(__file__), Path(__file__).parent / 'fixtures/candidate_model.py']
+        sources = [Path(__file__), Path(__file__).parent / 'fixtures/candidate_model.py',
+                   Path(__file__).parent / 'fixtures/ordered_replay.py']
         (ARGS.evidence_dir / (self._testMethodName + '.json')).write_text(json.dumps(dict(
-            version=1, test=self.id(), git=GIT,
+            version=2, test=self.id(), git=GIT,
             git_sha256=hashlib.sha256(Path(GIT).read_bytes()).hexdigest(),
             source_sha256={str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
             environment={k: v for k, v in self.env.items()
@@ -120,6 +125,175 @@ class Containment(unittest.TestCase):
                         always.add(commit)
         self.assertEqual(dict(model.associations), expected)
         self.assertEqual(model.always, always)
+
+    def check_replay(self, model, needle, *, extras=()):
+        from fixtures.ordered_replay import ordered_replay
+        trace = self.check(model, needle)
+        # Independently compare the unfiltered log traversal, not dates or model IDs.
+        full_log = self.git('--no-pager', 'log', '--all', '--format=%H', '--').decode().splitlines()
+        self.assertEqual(trace['scope'], full_log)
+        self.assertEqual(len(trace['scope']), len(set(trace['scope'])))
+        self.assertEqual(trace['reference_matches'],
+                         [c for c in full_log if c in set(trace['reference_matches'])])
+        self.assertTrue(set(extras) <= set(full_log))
+        trace['filter_candidates'] = list(trace['candidates'])
+        wanted = set(trace['candidates']) | set(extras)
+        trace['candidates'] = [c for c in full_log if c in wanted]
+        trace['path'] = 'fixture-ordered-replay' if wanted else 'fixture-empty-replay'
+        reference = self.run_git('--no-pager', 'log', '--all', b'-S' + needle, '--')
+        before = len(self.commands)
+        result = ordered_replay(self.run_git, needle, trace['scope'], trace['candidates'])
+        trace['replay_invocations'] = len(self.commands) - before
+        trace['replay_status'] = result.returncode
+        trace['replay_stdout_hex'] = result.stdout.hex()
+        trace['reference_status'] = reference.returncode
+        trace['reference_stdout_hex'] = reference.stdout.hex()
+        self.assertEqual(trace['replay_invocations'], 1 if wanted else 0)
+        if wanted:
+            self.assertNotIn('--all', result.args)
+            self.assertIn('--no-walk=unsorted', result.args)
+            self.assertIn('--stdin', result.args)
+        self.assertEqual((result.returncode, result.stdout),
+                         (reference.returncode, reference.stdout), trace)
+        return trace
+
+    def test_replay_prunes_and_preserves_one_formatting_session(self):
+        root = self.commit('root', {'content': b'needle'})
+        deletion = self.commit('deletion', {'content': b'other'})
+        unrelated = self.commit('unrelated', {'noise': b'unchanged'})
+        model = CandidateModel(self.git)
+        self.check_associations(model)
+        trace = self.check_replay(model, b'needle')
+        self.assertEqual(set(trace['candidates']), {root, deletion})
+        self.assertNotIn(unrelated, trace['candidates'])
+        # Conservative extra candidates must not create output or reset formatting.
+        self.check_replay(model, b'needle', extras=trace['scope'])
+        # A diagnostic negative control shows why concatenating sessions is invalid.
+        separately_formatted = b''.join(self.git('--no-pager', 'log', '--no-walk=unsorted',
+                                                c, '-Sneedle', '--') for c in trace['candidates'])
+        self.assertNotEqual(separately_formatted, bytes.fromhex(trace['reference_stdout_hex']))
+
+    def test_replay_one_candidate_and_nonempty_zero_matches(self):
+        root = self.commit('one candidate', {'content': b'needle', 'repeat': b'aaa'})
+        model = CandidateModel(self.git)
+        self.assertEqual(self.check_replay(model, b'needle')['candidates'], [root])
+        trace = self.check_replay(model, b'aaaa')
+        self.assertEqual(trace['candidates'], [root])
+        self.assertEqual(trace['reference_matches'], [])
+        self.assertEqual(trace['replay_stdout_hex'], '')
+
+    def test_replay_empty_guard_and_unborn_outcome(self):
+        from fixtures.ordered_replay import ordered_replay
+        # Record actual Git behavior in the initially unborn repository.
+        unborn = self.check_replay(CandidateModel(self.git), b'needle')
+        self.assertEqual(unborn['candidates'], [])
+        self.assertEqual(unborn['scope'], [])
+        root = self.commit('HEAD would match', {'content': b'needle'})
+        model = CandidateModel(self.git)
+        genuine = self.check_replay(model, b'zero-match-needle')
+        self.assertEqual(genuine['candidates'], [])
+        # Separately challenge the guard with an empty prepared sequence and a
+        # needle whose HEAD is known to match. No Git process may be launched.
+        self.assertEqual(self.check_replay(model, b'needle')['reference_matches'], [root])
+        before = len(self.commands)
+        guarded = ordered_replay(self.run_git, b'needle', [root], [])
+        self.assertEqual(len(self.commands), before)
+        self.assertEqual((guarded.returncode, guarded.stdout), (0, b''))
+        unsafe = self.run_git('--no-pager', 'log', '--no-walk=unsorted', '--stdin',
+                              '-Sneedle', '--', input=b'')
+        self.assertEqual(unsafe.returncode, 0)
+        self.assertTrue(unsafe.stdout)  # Git's implicit HEAD is the actual hazard.
+        self.traces.append(dict(path='guarded-empty-head-hazard', scope=[root], candidates=[],
+                                needle_hex=b'needle'.hex(), replay_invocations=0,
+                                status=guarded.returncode, stdout_hex=guarded.stdout.hex(),
+                                unsafe_git_stdout_hex=unsafe.stdout.hex()))
+
+    def test_replay_branch_order_with_tied_and_skewed_dates(self):
+        root = self.commit('root', {'content': b'needle'})
+        # A sole tip visits its skew-dated child before the newer parent.
+        self.env['GIT_AUTHOR_DATE'] = self.env['GIT_COMMITTER_DATE'] = '1990-01-01T00:00:00+0000'
+        main = self.commit('skewed child', {'content': b'needle needle'})
+        linear = self.check_replay(CandidateModel(self.git), b'needle')
+        self.assertEqual(linear['scope'], [main, root])
+        # Timestamp sorting would reverse these matching commits.
+        dates = {oid: int(date) for oid, date in
+                 (row.split() for row in self.git('log', '--all', '--format=%H %ct', '--').decode().splitlines())}
+        self.assertNotEqual(linear['scope'], sorted(linear['scope'], key=dates.get, reverse=True))
+        self.git('branch', 'side', root)
+        self.git('checkout', '-q', 'side')
+        self.env['GIT_AUTHOR_DATE'] = self.env['GIT_COMMITTER_DATE'] = '2001-01-01T00:00:00+0000'
+        side = self.commit('tied branch', {'side': b'needle'})
+        self.git('tag', 'duplicate-ref', side)
+        self.git('checkout', '-q', 'main')
+        model = CandidateModel(self.git)
+        trace = self.check_replay(model, b'needle')
+        self.assertEqual(set(trace['candidates']), {root, main, side})
+        # Detached ordinary HEAD remains part of current --all scope.
+        self.git('checkout', '-q', '--detach', side)
+        detached = self.commit('detached-only HEAD', {'detached': b'detached-needle'})
+        self.assertIn(detached, self.check_replay(model, b'needle')['candidates'])
+
+    def test_replay_merges_gitlinks_and_older_fetched_history(self):
+        root = self.commit('root', {'content': b'needle'})
+        self.git('branch', 'side')
+        main = self.commit('main', {'content': b'needle needle'})
+        self.git('checkout', '-q', 'side')
+        side = self.commit('side', {'side': b'needle'})
+        self.git('checkout', '-q', 'main')
+        tree = self.git('rev-parse', main + '^{tree}').strip()
+        merge = self.git('commit-tree', tree, '-p', main, '-p', side,
+                         input=b'merge\n').strip().decode()
+        self.git('reset', '--hard', merge)
+        for oid in (root, side):
+            self.git('update-index', '--add', '--cacheinfo', '160000,' + oid + ',module')
+            self.git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'gitlink change')
+        self.git('update-index', '--force-remove', 'module')
+        self.git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'gitlink deletion')
+        tip = self.git('rev-parse', 'HEAD').strip().decode()
+        octopus = self.git('commit-tree', tree, '-p', tip, '-p', main, '-p', side,
+                           input=b'octopus merge\n').strip().decode()
+        self.git('reset', '--hard', octopus)
+        model = CandidateModel(self.git)
+        self.check_associations(model)
+        self.assertTrue({merge, octopus} <= model.always)
+        # Simulate fetching an unrelated older repository branch with real fetch.
+        donor = self.repo / '.git' / 'donor'
+        donor.mkdir()
+        self.git('init', '-q', '--initial-branch=older', cwd=donor)
+        self.env['GIT_AUTHOR_DATE'] = self.env['GIT_COMMITTER_DATE'] = '1980-01-01T00:00:00+0000'
+        blob = self.git('hash-object', '-w', '--stdin', input=b'older-needle', cwd=donor).strip()
+        oldtree = self.git('mktree', input=b'100644 blob ' + blob + b'\told\n', cwd=donor).strip()
+        older = self.git('commit-tree', oldtree, input=b'older fetched root\n', cwd=donor).strip().decode()
+        self.git('update-ref', 'refs/heads/older', older, cwd=donor)
+        self.git('fetch', '-q', str(donor), 'refs/heads/older:refs/heads/fetched')
+        new = self.commit('unindexed new', {'new': b'new-needle'})
+        for needle in (b'needle', b'older-needle', b'new-needle',
+                       b'Subproject commit ' + root.encode(), b'zero-match-needle'):
+            trace = self.check_replay(model, needle)
+            self.assertTrue({older, new} <= set(trace['candidates']))
+            self.assertTrue(model.always <= set(trace['candidates']))
+
+    def test_replay_ref_moves_deletions_and_out_of_scope(self):
+        root = self.commit('root', {'content': b'needle'})
+        self.git('branch', 'kept')
+        tip = self.commit('tip', {'content': b'needle needle'})
+        self.git('tag', 'retain-tip', tip)
+        model = CandidateModel(self.git)
+        self.check_replay(model, b'needle')
+        self.git('reset', '--hard', root)  # move the current branch among covered IDs
+        self.check_replay(model, b'needle')  # tag still keeps tip in scope
+        self.git('tag', '-d', 'retain-tip')
+        trace = self.check_replay(model, b'needle')
+        self.assertEqual(trace['candidates'], [root])
+        self.assertNotIn(tip, trace['scope'])
+        # Same commit count, different history: count cannot establish coverage.
+        tree = self.git('rev-parse', root + '^{tree}').strip()
+        other = self.git('commit-tree', tree, input=b'different root\n').strip().decode()
+        self.git('reset', '--hard', other)
+        self.git('branch', '-D', 'kept')
+        trace = self.check_replay(model, b'needle')
+        self.assertEqual(trace['candidates'], [other])
+        self.assertNotIn(root, trace['scope'])
 
     def test_special_contents_renames_copies_and_subdirectory(self):
         root = self.commit('contents', {'space name': b'outside-edited-line\nneedle\n',

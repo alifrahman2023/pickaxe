@@ -198,5 +198,19 @@ python3 tests/candidate_containment.py --evidence-dir build/evidence/candidate-c
 Its trace includes actual candidates, reference matches, coverage, associations,
 and conservative bypasses. The Python model intentionally loads tiny fixtures
 into memory; it is not the bounded C++ index builder. The same evidence note
-includes runnable Git object and C++ byte-string demonstrations. Ordered replay,
-eligibility implementation, and publication investigations remain later tickets.
+includes runnable Git object and C++ byte-string demonstrations.
+
+The [ticket #20 replay gate](docs/implementation/ticket-20.md) adds one ordered
+`--no-walk=unsorted --stdin` Git verification session and a guarded empty path in
+the same development-only suite. Eleven containment/replay checks retain exact
+stdout/status and scope/candidate evidence. Run the focused gate examples:
+
+```sh
+python3 tests/candidate_containment.py \
+  Containment.test_replay_prunes_and_preserves_one_formatting_session \
+  Containment.test_replay_empty_guard_and_unborn_outcome -v
+```
+
+Passing these tiny fixtures establishes feasibility on this tested environment;
+it enables no product acceleration. Eligibility implementation, publication
+investigations, production indexing and full qualification remain pending.
