@@ -135,3 +135,9 @@ verified open and not started. Full process-ownership/terminal cancellation,
 candidate/replay feasibility, indexing, memory/publication audits, acceleration
 qualification, benchmarks, Linux preparation, and release acceptance remain
 pending in their assigned tickets.
+
+Continuation: the owner subsequently authorized #18 in the same PR. Its
+completed cancellation/process-ownership checks and current #19 handoff are in
+[ticket-18.md](ticket-18.md). The #17 archive remains the historical
+16-check/version-2 fixture run; version-3 hashes and the 18-check run are
+retained with #18.

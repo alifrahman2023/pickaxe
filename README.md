@@ -143,10 +143,46 @@ pointers are taken. Combining `-S` and the needle into one argument preserves
 leading hyphens and arbitrary representable bytes without shell evaluation.
 `execv` replaces Pickaxe with Git using the same process ID. No Pickaxe parent
 waits for a child or translates its output/status; Ctrl-C reaches that process
-as Git. More detailed real-Git/helper/process-group evidence remains ticket #18.
+as Git. The following checks establish real-Git/helper/process-group evidence.
+
+Cancellation is checked before and after observable stdout against real Git,
+using both foreground-process-group SIGINT and actual Ctrl-C on a controlled
+terminal. Readiness comes from a local socket handshake; checks wait for stream
+EOF/status and verify the process group is empty. No sleeps decide when to
+cancel. Tests create their own sessions and terminals, so they do not signal
+your existing shell or jobs:
+
+```sh
+python3 tests/cli_baseline.py --pk ./build/pk \
+  --evidence-dir ./build/evidence/cancellation \
+  CliBaseline.test_real_git_cancellation_before_and_after_stdout \
+  CliBaseline.test_streams_and_inherited_descriptor_ownership -v
+```
+
+These macOS checks require local access to PTYs and process-group inspection.
+The terminal delivers Ctrl-C to its foreground group, including Git's converter;
+sending a signal only to a single PID is a different operation. A cancelled
+search is unsuccessful even if it already wrote bytes. Those bytes are an
+incomplete result, not a successful empty or complete search.
+
+Resource lifetime matters at both boundaries. On launch failure, C++ objects
+release owned memory when their scopes unwind normally (RAII). On successful
+`execv`, the kernel replaces the old process image; C++ destructors do not run.
+Pickaxe owns no helper pipes or descriptors in this baseline: Git receives the
+caller's streams and intentionally inherited descriptors. Tests check binary
+stdin/stdout, stream EOF, success/failure statuses, and absence of additional
+descriptors. Context managers close test sockets, pipes, and PTYs; failure
+cleanup targets only the new test process group.
+
+Input validation and byte ownership are ordinary C++20; PATH lookup and
+`execv` form the small POSIX process boundary. PTY/`ps`/`/dev/fd` checks are
+macOS evidence. Future subprocess helpers and Linux adaptation need their own
+ownership checks; no general subprocess framework has been introduced.
 
 Ticket [#16](https://github.com/alifrahman2023/pickaxe/issues/16) evidence,
 review baseline, limitations, and continuation are in
 [docs/implementation/ticket-16.md](docs/implementation/ticket-16.md).
 The follow-on [ticket #17 evidence](docs/implementation/ticket-17.md) records
 the extended checks and retained raw comparison bundle in the same PR.
+[Ticket #18 evidence](docs/implementation/ticket-18.md) records the completed
+cancellation/descriptor checks, current handoff, and raw process traces.

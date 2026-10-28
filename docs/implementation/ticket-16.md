@@ -145,6 +145,8 @@ publication audits, acceleration qualification, benchmarks, Linux preparation,
 and two-platform release evidence remain pending in their assigned tickets.
 Passing this baseline does not satisfy those obligations or enable acceleration.
 
-The owner authorized combining #16/#17 in PR #50, with both issues closing when
-the PR is merged. The native dependency edge remains recorded. Current next
-ticket is #18; it has not been started. The PR remains unmerged for owner review.
+The owner authorized combining #16/#17/#18 in PR #50, with the issues closing
+when the PR is merged. Native dependency edges remain recorded. See
+[ticket-18.md](ticket-18.md) for completed cancellation evidence and the current
+handoff. Current next ticket is #19; it has not been started. The PR remains
+unmerged for owner review.

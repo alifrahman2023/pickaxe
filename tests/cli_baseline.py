@@ -1,16 +1,22 @@
-"""Tickets #16/#17: observe the CLI against deterministic local reference Git."""
+"""Milestone 1: observe the CLI against deterministic local reference Git."""
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
+import pty
 import shutil
 import shlex
+import selectors
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import unittest
 
@@ -51,6 +57,7 @@ class CliBaseline(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.records = []
+        self.observations = []
         if ARGS.evidence_dir is not None:
             self.addCleanup(self.save_evidence)
         # Isolate fixture construction, but give pk and its oracle identical inputs.
@@ -80,16 +87,20 @@ class CliBaseline(unittest.TestCase):
         working_directory = self.repo if cwd is None else cwd
         result = subprocess.run(command, cwd=working_directory, env=self.env,
                                 capture_output=True, timeout=5, **kwargs)
+        self.record_result(command, result, cwd=working_directory, stdin=kwargs.get("input"))
+        return result
+
+    def record_result(self, command, result, *, cwd=None, stdin=None):
         self.records.append({
             "argv_hex": [os.fsencode(arg).hex() for arg in command],
-            "cwd": str(working_directory),
+            "cwd": str(self.repo if cwd is None else cwd),
             "environment": {key: value for key, value in self.env.items()
                             if key.startswith("GIT_") or key in ("PATH", "LC_ALL", "TZ")},
             "status": result.returncode,
+            "stdin_hex": None if stdin is None else stdin.hex(),
             "stdout_hex": result.stdout.hex(),
             "stderr_hex": result.stderr.hex(),
         })
-        return result
 
     def save_evidence(self):
         self.run_process([GIT, "config", "--show-origin", "--show-scope", "--list"])
@@ -101,12 +112,15 @@ class CliBaseline(unittest.TestCase):
         ARGS.evidence_dir.mkdir(parents=True, exist_ok=True)
         destination = ARGS.evidence_dir / (self._testMethodName + ".json")
         destination.write_text(json.dumps({
-            "fixture_version": 2,
+            "fixture_version": 3,
             "fixture_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "textconv_source_sha256": hashlib.sha256(
+                (Path(__file__).parent / "helpers" / "controlled_textconv.py").read_bytes()).hexdigest(),
             "git_executable_sha256": hashlib.sha256(Path(GIT).read_bytes()).hexdigest(),
             "pk_executable_sha256": hashlib.sha256(Path(PK).read_bytes()).hexdigest(),
             "test": self.id(),
             "commands": self.records,
+            "observations": self.observations,
         }, indent=2) + "\n")
 
     def git(self, *args):
@@ -174,7 +188,7 @@ class CliBaseline(unittest.TestCase):
     def test_missing_git(self):
         self.env["PATH"] = str(self.root / "no-git")
         result = self.run_process([PK, "search", "needle"])
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 127)
         self.assertEqual(result.stdout, b"")
         self.assertIn(b"git", result.stderr)
 
@@ -189,8 +203,8 @@ class CliBaseline(unittest.TestCase):
 
     def test_unlaunchable_selected_git_does_not_try_another(self):
         self.selected_git("This is not an executable format.\n")
-        result = self.run_process([PK, "search", "needle"])
-        self.assertNotEqual(result.returncode, 0)
+        result = self.run_process([PK, "search", "needle"], input=b"caller input\x00\xff")
+        self.assertEqual(result.returncode, 126)
         self.assertEqual(result.stdout, b"")
         self.assertIn(b"cannot launch git", result.stderr)
 
@@ -342,36 +356,215 @@ class CliBaseline(unittest.TestCase):
         self.assertIn(b"latest match before failure", reference.stdout)
         self.assertIn(b"controlled textconv failure", reference.stderr)
 
+    def test_streams_and_inherited_descriptor_ownership(self):
+        caller_file = self.root / "caller-owned"
+        caller_file.write_bytes(b"caller descriptor")
+        selected = self.selected_git("")
+        payload = b"unchanged pipe bytes\x00\xff\n"
+        with caller_file.open("rb") as inherited:
+            for status in (0, 37):
+                with self.subTest(status=status):
+                    selected.write_text(
+                        "#!" + sys.executable + "\n"
+                        "import json, os, sys\n"
+                        "descriptors = []\n"
+                        "for name in os.listdir('/dev/fd'):\n"
+                        "    try: os.fstat(int(name))\n"
+                        "    except OSError: continue\n"
+                        "    descriptors.append(int(name))\n"
+                        "sys.stdout.buffer.write(sys.stdin.buffer.read())\n"
+                        "sys.stderr.write(json.dumps(sorted(descriptors)) + '\\n')\n"
+                        "sys.exit(" + str(status) + ")\n"
+                    )
+                    command = [str(selected), "--no-pager", "log", "--all", "-Sneedle", "--"]
+                    reference = self.run_process(command, input=payload, pass_fds=(inherited.fileno(),))
+                    result = self.run_process([PK, "search", "needle"], input=payload,
+                                              pass_fds=(inherited.fileno(),))
+                    self.assertEqual(reference.returncode, status)
+                    self.assertEqual(reference.stdout, payload)
+                    self.assertEqual(json.loads(reference.stderr), [0, 1, 2, inherited.fileno()])
+                    self.assertEqual((result.returncode, result.stdout), (status, payload))
+                    self.assertTrue(result.stderr.startswith(b"pk: Git fallback;"))
+                    self.assertEqual(result.stderr.split(b"\n", 1)[1], reference.stderr)
+                    self.observations.append({
+                        "forwarded_status": status, "caller_descriptor": inherited.fileno(),
+                        "selected_git_descriptors": json.loads(reference.stderr),
+                        "stdin_eof_and_stdout_stderr_eof_observed": True,
+                    })
+
+    def test_real_git_cancellation_before_and_after_stdout(self):
+        (self.repo / ".gitattributes").write_text("content diff=controlled\n")
+        (self.repo / "content").write_bytes(b"needle newest\n")
+        # More than a stdio buffer ensures observable output even when Git's
+        # captured log output is buffered. The event loop drains it concurrently.
+        self.commit("observable newest match " + "x" * 32768, "content", ".gitattributes")
+        helper = Path(__file__).parent / "helpers" / "controlled_textconv.py"
+        reference_statuses = {}
+        for phase in ("before", "after"):
+            for delivery in ("group", "terminal"):
+                for program in ("git", "pk"):
+                    with self.subTest(phase=phase, delivery=delivery, program=program):
+                        result = self.cancel_real_search(helper, phase, delivery, program)
+                        if program == "git":
+                            reference_statuses[phase, delivery] = result
+                        else:
+                            self.assertEqual(result, reference_statuses[phase, delivery])
+
+    def cancel_real_search(self, helper, phase, delivery, program):
+        directory = self.root / (phase + "-" + delivery + "-" + program)
+        directory.mkdir()
+        trace_path = directory / "trace.json"
+        command = ([GIT, "--no-pager", "log", "--all", "-Sneedle", "--"]
+                   if program == "git" else [PK, "search", "needle"])
+        with contextlib.ExitStack() as resources:
+            # Keep the local socket path below macOS's sockaddr_un path limit.
+            control_directory = resources.enter_context(tempfile.TemporaryDirectory(prefix="pk18-", dir="/tmp"))
+            socket_path = str(Path(control_directory) / "control")
+            server = resources.enter_context(socket.socket(socket.AF_UNIX))
+            server.bind(socket_path)
+            server.listen(1)
+            self.git("config", "diff.controlled.textconv", shlex.join(
+                [sys.executable, str(helper), socket_path, phase]))
+            self.env["GIT_TRACE2_EVENT"] = str(trace_path)
+            terminal_options = {}
+            if delivery == "terminal":
+                master_fd, slave_fd = pty.openpty()
+                master = resources.enter_context(os.fdopen(master_fd, "wb", buffering=0))
+                slave = resources.enter_context(os.fdopen(slave_fd, "rb", buffering=0))
+                terminal_settings = termios.tcgetattr(slave.fileno())
+                terminal_settings[3] &= ~(termios.ECHO | termios.ECHONL)
+                terminal_settings[3] |= termios.ISIG
+                terminal_settings[6][termios.VINTR] = b"\x03"
+                termios.tcsetattr(slave.fileno(), termios.TCSANOW, terminal_settings)
+
+                def claim_terminal():
+                    # Popen has already created the new session and duplicated
+                    # the slave onto stdin when this child-only hook runs.
+                    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+                terminal_options = {"stdin": slave, "preexec_fn": claim_terminal}
+            else:
+                terminal_options = {"stdin": subprocess.DEVNULL}
+            process = subprocess.Popen(command, cwd=self.repo, env=self.env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       start_new_session=True, **terminal_options)
+            if delivery == "terminal":
+                slave.close()
+            captured = {"stdout": bytearray(), "stderr": bytearray(), "events": bytearray()}
+            ready = None
+            try:
+                selector = resources.enter_context(selectors.PollSelector())
+                for stream, name in [(process.stdout, "stdout"), (process.stderr, "stderr"),
+                                     (server, "connection")]:
+                    selector.register(stream, selectors.EVENT_READ, name)
+                deadline = time.monotonic() + 5
+                while ready is None or (phase == "after" and not captured["stdout"]):
+                    notifications = selector.select(timeout=max(0, deadline - time.monotonic()))
+                    self.assertTrue(notifications, "Git/textconv did not reach cancellation point")
+                    for key, _ in notifications:
+                        if key.data == "connection":
+                            connection, _ = server.accept()
+                            resources.enter_context(connection)
+                            selector.unregister(server)
+                            selector.register(connection, selectors.EVENT_READ, "events")
+                            continue
+                        chunk = os.read(key.fd, 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        captured[key.data].extend(chunk)
+                    if b"\n" in captured["events"]:
+                        ready = json.loads(captured["events"].split(b"\n", 1)[0])
+                self.assertEqual(ready["event"], "ready")
+                self.assertEqual(ready["group"], process.pid)
+                group_command = ["/bin/ps", "-g", str(process.pid),
+                                 "-o", "pid=,ppid=,pgid=,stat=,comm="]
+                membership = self.run_process(group_command, check=True)
+                member_pids = {int(line.split()[0]) for line in membership.stdout.splitlines()}
+                self.assertTrue({process.pid, ready["pid"]}.issubset(member_pids))
+                if phase == "before":
+                    self.assertFalse(captured["stdout"])
+                else:
+                    self.assertIn(b"observable newest match", captured["stdout"])
+                selector.close()
+                stdout_before_signal = bytes(captured["stdout"])
+                cancel_started = time.monotonic()
+                if delivery == "terminal":
+                    self.assertEqual(os.tcgetpgrp(master.fileno()), process.pid)
+                    master.write(b"\x03")  # Terminal VINTR: Ctrl-C to foreground group.
+                else:
+                    os.killpg(process.pid, signal.SIGINT)
+                stdout, stderr = process.communicate(timeout=5)
+                cancellation_seconds = time.monotonic() - cancel_started
+                captured["stdout"].extend(stdout)
+                captured["stderr"].extend(stderr)
+                self.assertEqual(process.returncode, -signal.SIGINT)
+                connection.settimeout(5)
+                self.assertEqual(connection.recv(1), b"", "textconv kept its control socket open")
+                if phase == "before":
+                    self.assertFalse(captured["stdout"])
+                groups = self.run_process(group_command)
+                self.assertIn(groups.returncode, (0, 1))
+                self.assertEqual(groups.stderr, b"")
+                remaining = groups.stdout.splitlines()
+                self.assertEqual(remaining, [], "search left an orphaned process")
+                trace = [json.loads(line) for line in trace_path.read_text().splitlines()]
+                starts = [entry for entry in trace if entry["event"] == "start"]
+                self.assertEqual(len(starts), 1, "search retried or launched replacement Git")
+                reason = b"pk: Git fallback;"
+                self.assertEqual(captured["stderr"].count(reason), int(program == "pk"))
+                self.record_result(command, subprocess.CompletedProcess(
+                    command, process.returncode, bytes(captured["stdout"]), bytes(captured["stderr"])))
+                self.observations.append({
+                    "phase": phase, "delivery": delivery, "program": program,
+                    "search_pid": process.pid, "helper_ready": ready,
+                    "helper_ready_hex": bytes(captured["events"]).hex(),
+                    "helper_exit_observed": True, "remaining_group": [],
+                    "seconds_from_signal_to_eof_and_status": cancellation_seconds,
+                    "git_trace": trace, "stdout_before_signal_hex": stdout_before_signal.hex(),
+                })
+                return process.returncode
+            finally:
+                self.env.pop("GIT_TRACE2_EVENT", None)
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=5)
+
     def test_basic_cancellation_of_selected_git(self):
-        # A controlled external executable makes readiness deterministic. This
-        # does not replace #18's real-Git/helper/terminal cancellation evidence.
-        marker = self.root / "ready"
-        self.selected_git(
-            "#!" + sys.executable + "\n"
-            "import os, signal\n"
-            "signal.signal(signal.SIGINT, signal.SIG_DFL)\n"
-            "with open(" + repr(str(marker)) + ", 'w') as ready:\n"
-            "    ready.write(str(os.getpid()))\n"
-            "signal.pause()\n"
-        )
-        process = subprocess.Popen([PK, "search", "needle"], cwd=self.repo, env=self.env,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            deadline = time.monotonic() + 5
-            while not marker.exists() or not marker.read_text():
-                if time.monotonic() >= deadline or process.poll() is not None:
-                    self.fail("selected Git never became ready")
-                time.sleep(0.01)
-            self.assertEqual(int(marker.read_text()), process.pid)
-            process.send_signal(signal.SIGINT)
-            stdout, stderr = process.communicate(timeout=5)
-            self.assertEqual(process.returncode, -signal.SIGINT)
-            self.assertEqual(stdout, b"")
-            self.assertEqual(len(stderr.splitlines()), 1)
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.communicate(timeout=5)
+        # An explicit pipe notification replaces the original marker polling.
+        with contextlib.ExitStack() as resources:
+            read_fd, write_fd = os.pipe()
+            ready = resources.enter_context(os.fdopen(read_fd, "rb", buffering=0))
+            writer = resources.enter_context(os.fdopen(write_fd, "wb", buffering=0))
+            self.selected_git(
+                "#!" + sys.executable + "\n"
+                "import os, signal\n"
+                "signal.signal(signal.SIGINT, signal.SIG_DFL)\n"
+                "os.write(" + str(write_fd) + ", str(os.getpid()).encode())\n"
+                "os.close(" + str(write_fd) + ")\n"
+                "signal.pause()\n"
+            )
+            process = subprocess.Popen([PK, "search", "needle"], cwd=self.repo, env=self.env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       pass_fds=(write_fd,))
+            writer.close()
+            try:
+                selector = resources.enter_context(selectors.PollSelector())
+                selector.register(ready, selectors.EVENT_READ)
+                self.assertTrue(selector.select(timeout=5), "selected Git never became ready")
+                self.assertEqual(int(ready.read(64)), process.pid)
+                process.send_signal(signal.SIGINT)
+                stdout, stderr = process.communicate(timeout=5)
+                self.record_result(process.args, subprocess.CompletedProcess(
+                    process.args, process.returncode, stdout, stderr))
+                self.assertEqual(process.returncode, -signal.SIGINT)
+                self.assertEqual(stdout, b"")
+                self.assertEqual(len(stderr.splitlines()), 1)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
 
 
 if __name__ == "__main__":
