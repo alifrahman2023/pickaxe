@@ -131,7 +131,8 @@ class Containment(unittest.TestCase):
         os.rename(self.repo / 'space name', self.repo / 'renamed')
         rename = self.commit('pure rename', {})
         (self.repo / 'copy').write_bytes((self.repo / 'renamed').read_bytes())
-        self.commit('copy and rename edit', {'renamed': b'outside-edited-line\nneedle\nedit\n'})
+        os.rename(self.repo / 'renamed', self.repo / 'renamed-with-edit')
+        self.commit('copy and rename edit', {'renamed-with-edit': b'outside-edited-line\nneedle\nedit\n'})
         (self.repo / 'link').unlink()
         self.commit('type and executable mode', {'link': b'regular-needle'})
         (self.repo / 'copy').chmod(0o755)
@@ -158,13 +159,14 @@ class Containment(unittest.TestCase):
         split = self.commit('split across blobs', {'left': b'qwer', 'right': b'erty'})
         repeated = self.commit('false positive', {'repeat': b'aaa', 'order': b'abc--bcd--cde'})
         boundary = self.commit('boundaries', {'boundary': b'123456' + 'caf\u00e9'.encode() + b'XYZ',
+                                            'unicode-boundary': b'123' + 'caf\u00e9XYZ'.encode(),
                                             'repeated': b'aaaaa'})
         model = CandidateModel(self.git, chunk_size=7)
         self.check_associations(model)
         trace = self.check(model, b'qwerty')
         self.assertNotIn(split, trace['candidates'])
         self.assertEqual(trace['matching_blobs'], [])
-        for needle in [b'6caf', 'caf\u00e9XYZ'.encode(), b'aaaaa']:
+        for needle in [b'6caf', '3caf\u00e9XYZ'.encode(), b'aaaaa']:
             self.assertIn(boundary, self.check(model, needle)['reference_matches'])
         trace = self.check(model, b'aaaa')
         self.assertIn(repeated, trace['candidates'])  # aaa has the sole distinct trigram

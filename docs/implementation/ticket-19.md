@@ -215,8 +215,23 @@ gzip -dc docs/implementation/evidence/ticket-19.json.gz > /tmp/pickaxe-ticket-19
 
 ## Review and handoff
 
-Independent Standards and Spec reviews use the recorded starting commit as the
-fixed point. Review findings and their resolution are recorded after review.
+Applied the code-review skill with independent parallel Standards and Spec
+reviewers against the recorded starting commit, initially reviewing `00706b4`.
+
+### Standards
+
+Pass: **0 documented violations, 0 actionable smell findings**. The reviewer
+independently reran the five containment checks and verified the archive's 23
+records, source hashes and whitespace check.
+
+### Spec
+
+Initial review found **2 fixture evidence gaps**, with no candidate-model
+correctness failure: the UTF-8 character was inside one chunk, and rename/edit
+were separate commits. Corrected the fixture to put `é` at offsets 6–7 across a
+seven-byte boundary and renamed/edited the same file in one commit. Focused
+checks and all three defect probes passed; the full suite and archive were
+regenerated. Follow-up review results are recorded below.
 
 Only #19 is implemented. Draft PR preparation does not mark it ready, merge it,
 or close the issue. Next ticket, **not started**:
