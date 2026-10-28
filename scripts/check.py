@@ -17,6 +17,8 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {'cli_baseline': 'tests/cli_baseline.py',
           'candidate_containment': 'tests/candidate_containment.py'}
+MODEL_SOURCES = {'tests/candidate_containment.py', 'tests/fixtures/candidate_model.py',
+                 'tests/fixtures/ordered_replay.py'}
 
 
 def sha256(path):
@@ -61,11 +63,15 @@ def verify(bundle, current_sources=False):
                 require(record['pk_executable_sha256'] == bundle['pk_sha256'], 'pk binary hash mismatch')
                 git_hash = record['git_executable_sha256']
             else:
+                normalized = {}
                 for path, digest in record['source_sha256'].items():
                     source = Path(path)
                     if source.is_absolute():
                         source = source.relative_to(bundle['source_root'])
-                    require(bundle['sources'][source.as_posix()] == digest, 'model source hash mismatch')
+                    normalized[source.as_posix()] = digest
+                require(MODEL_SOURCES <= normalized.keys(), 'candidate source metadata incomplete')
+                for path, digest in normalized.items():
+                    require(bundle['sources'][path] == digest, 'model source hash mismatch')
                 git_hash = record['git_sha256']
             require(git_hash == bundle['git_sha256'], 'Git binary hash mismatch')
     counts = [int(n) for n in re.findall(r'Ran (\d+) tests? in', bundle['ctest_log'])]
