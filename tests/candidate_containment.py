@@ -406,6 +406,7 @@ class Containment(unittest.TestCase):
         # Timestamp sorting would reverse these matching commits.
         dates = {oid: int(date) for oid, date in
                  (row.split() for row in self.git('log', '--all', '--format=%H %ct', '--').decode().splitlines())}
+        self.assertLess(dates[main], dates[root], 'fixture must contain a child older than its parent')
         self.assertNotEqual(linear['scope'], sorted(linear['scope'], key=dates.get, reverse=True))
         self.git('branch', 'side', root)
         self.git('checkout', '-q', 'side')
@@ -494,7 +495,15 @@ class Containment(unittest.TestCase):
         rename = self.commit('pure rename', {})
         (self.repo / 'copy').write_bytes((self.repo / 'renamed').read_bytes())
         os.rename(self.repo / 'renamed', self.repo / 'renamed-with-edit')
-        self.commit('copy and rename edit', {'renamed-with-edit': b'outside-edited-line\nneedle\nedit\n'})
+        edited = self.commit('copy and rename edit', {'renamed-with-edit': b'outside-edited-line\nneedle\nedit\n'})
+        old_tree = self.snapshot(edited + '^')
+        new_tree = self.snapshot(edited)
+        self.assertIn(b'renamed', old_tree)
+        self.assertNotIn(b'renamed', new_tree)
+        self.assertNotIn(b'renamed-with-edit', old_tree)
+        self.assertIn(b'renamed-with-edit', new_tree)
+        self.assertNotEqual(old_tree[b'renamed'][2], new_tree[b'renamed-with-edit'][2],
+                            'rename-with-edit must change contents in the rename commit')
         (self.repo / 'link').unlink()
         self.commit('type and executable mode', {'link': b'regular-needle'})
         (self.repo / 'copy').chmod(0o755)
@@ -523,6 +532,11 @@ class Containment(unittest.TestCase):
         boundary = self.commit('boundaries', {'boundary': b'123456' + 'caf\u00e9'.encode() + b'XYZ',
                                             'unicode-boundary': b'123' + 'caf\u00e9XYZ'.encode(),
                                             'repeated': b'aaaaa'})
+        unicode_blob = self.git('cat-file', 'blob', boundary + ':unicode-boundary')
+        character = 'é'.encode()
+        start = unicode_blob.index(character)
+        self.assertNotEqual(start // 7, (start + len(character) - 1) // 7,
+                            'fixture must split the UTF-8 character across chunks')
         model = CandidateModel(self.git, chunk_size=7)
         self.check_associations(model)
         trace = self.check(model, b'qwerty')

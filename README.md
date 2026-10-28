@@ -229,3 +229,7 @@ python3 tests/candidate_containment.py \
   Containment.test_dependencies_attribute_sources_and_text_conversion \
   Containment.test_dependencies_output_profiles_against_early_replay -v
 ```
+
+For the shared macOS CI/local build-and-check command, validated evidence
+collection, and reliable GitHub CLI operations, see
+[development checks](docs/development.md).
