@@ -121,7 +121,30 @@ gzip -dc docs/implementation/evidence/ticket-18.json.gz > /tmp/pickaxe-ticket-18
 
 ## Code review and handoff
 
-Independent Standards and Spec reviews are pending at the implementation commit.
+Applied the code-review skill with independent parallel Standards and Spec
+reviewers against `ab5aaff526cbda6ee55b174ab76ff10f2ff247d6...df2a8b5`.
+Reviewed commits: `7f25f58`, `3ba7ebd`, `addc30d`, `e2ce57b`, and `df2a8b5`.
+Only review/handoff documentation changes after review.
+
+### Standards
+
+Pass: **0 documented violations, 0 actionable smell findings**. Repository
+guidance/glossary and the approved CLI-process seam are followed; unrelated
+local work is preserved. Process ownership remains at the small exec boundary,
+and test resource lifetimes/cleanup are explicit. No general subprocess
+framework or product control was introduced.
+
+### Spec
+
+Pass: **0 findings**. All three tickets' completion checks are satisfied,
+including before/after-output cancellation, actual Ctrl-C, unsuccessful status,
+one Git invocation, no surviving group, streams/descriptors, launch failure, and
+runnable explanations. The reviewer verified the 18 current records, 3 installed
+checks, 8 scenarios, and matching fixture/helper hashes, then independently reran
+CTest: **18/18 checks passed**. Future work remains correctly pending.
+
+Standards: 0 findings; Spec: 0 findings; neither axis has an outstanding issue.
+`git diff --check` and preserved-local-file checksum verification passed.
 Only #16/#17/#18 are included; PR #50 remains unmerged for owner review.
 
 Next ticket: [#19 — M2 / T04 — Establish candidate containment on tiny histories](https://github.com/alifrahman2023/pickaxe/issues/19),

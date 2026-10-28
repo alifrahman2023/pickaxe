@@ -139,8 +139,9 @@ unchanged; only the five explicit ticket paths are committed.
 
 The broader literal-byte/fallback/status catalogue was pending at the #16
 handoff and is now delivered in [ticket #17](ticket-17.md); complete
-real-Git/helper/terminal/process-ownership cancellation evidence is **pending
-#18**. Candidate/replay feasibility, indexing, checksum integration, memory and
+real-Git/helper/terminal/process-ownership cancellation evidence was pending at
+that handoff and is now delivered in [ticket #18](ticket-18.md).
+Candidate/replay feasibility, indexing, checksum integration, memory and
 publication audits, acceleration qualification, benchmarks, Linux preparation,
 and two-platform release evidence remain pending in their assigned tickets.
 Passing this baseline does not satisfy those obligations or enable acceleration.

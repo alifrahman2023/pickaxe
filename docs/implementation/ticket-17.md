@@ -130,8 +130,9 @@ unchanged. The PR covers #16/#17 and includes closing references for both; it
 remains unmerged for owner review. The planning map and resolved decisions are
 unchanged.
 
-Next ticket: [#18 — M1 / T03 — Verify cancellation and Git process ownership](https://github.com/alifrahman2023/pickaxe/issues/18),
-verified open and not started. Full process-ownership/terminal cancellation,
+Next ticket at the original #17 handoff:
+[#18 — M1 / T03 — Verify cancellation and Git process ownership](https://github.com/alifrahman2023/pickaxe/issues/18),
+then open and not started. At that handoff, full process-ownership/terminal cancellation,
 candidate/replay feasibility, indexing, memory/publication audits, acceleration
 qualification, benchmarks, Linux preparation, and release acceptance remain
 pending in their assigned tickets.
