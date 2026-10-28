@@ -12,10 +12,16 @@ install(TARGETS pk RUNTIME DESTINATION bin)
 
 include(CTest)
 if(BUILD_TESTING)
+    set(PICKAXE_EVIDENCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/evidence" CACHE PATH
+        "Development test evidence directory")
     find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
     add_test(NAME cli_baseline
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_baseline.py"
             --pk "$<TARGET_FILE:pk>"
-            --evidence-dir "${CMAKE_CURRENT_BINARY_DIR}/evidence/cli-baseline")
+            --evidence-dir "${PICKAXE_EVIDENCE_DIR}/cli-baseline")
     set_tests_properties(cli_baseline PROPERTIES TIMEOUT 30)
+    add_test(NAME candidate_containment
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/candidate_containment.py"
+            --evidence-dir "${PICKAXE_EVIDENCE_DIR}/candidate-containment")
+    set_tests_properties(candidate_containment PROPERTIES TIMEOUT 30)
 endif()

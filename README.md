@@ -186,3 +186,50 @@ The follow-on [ticket #17 evidence](docs/implementation/ticket-17.md) records
 the extended checks and retained raw comparison bundle in the same PR.
 [Ticket #18 evidence](docs/implementation/ticket-18.md) records the completed
 cancellation/descriptor checks, current handoff, and raw process traces.
+
+The development-only [ticket #19 containment model](docs/implementation/ticket-19.md)
+checks complete blob associations against independent tree snapshots and matches
+against Git. Run it without building or enabling an accelerator:
+
+```sh
+python3 tests/candidate_containment.py --evidence-dir build/evidence/candidate-containment -v
+```
+
+Its trace includes actual candidates, reference matches, coverage, associations,
+and conservative bypasses. The Python model intentionally loads tiny fixtures
+into memory; it is not the bounded C++ index builder. The same evidence note
+includes runnable Git object and C++ byte-string demonstrations.
+
+The [ticket #20 replay gate](docs/implementation/ticket-20.md) adds one ordered
+`--no-walk=unsorted --stdin` Git verification session and a guarded empty path in
+the same development-only suite. Eleven containment/replay checks retain exact
+stdout/status and scope/candidate evidence. Run the focused gate examples:
+
+```sh
+python3 tests/candidate_containment.py \
+  Containment.test_replay_prunes_and_preserves_one_formatting_session \
+  Containment.test_replay_empty_guard_and_unborn_outcome -v
+```
+
+Passing these tiny fixtures establishes feasibility on this tested environment;
+it enables no product acceleration. Eligibility implementation, publication
+investigations, production indexing and full qualification remain pending.
+
+
+The [initial dependency inventory](docs/implementation/eligibility-inventory.md)
+and [ticket #21 experiments](docs/implementation/ticket-21.md) identify effective
+config/attribute sources and conservative eligibility limits. Five development
+checks exercise scopes/includes/environment, attribute text conversion, custom
+output, rename/submodule settings, and incomplete inspection. No eligibility
+parser or product acceleration is enabled:
+
+```sh
+python3 tests/candidate_containment.py \
+  Containment.test_dependencies_config_sources_and_environment_precedence \
+  Containment.test_dependencies_attribute_sources_and_text_conversion \
+  Containment.test_dependencies_output_profiles_against_early_replay -v
+```
+
+For the shared macOS CI/local build-and-check command, validated evidence
+collection, and reliable GitHub CLI operations, see
+[development checks](docs/development.md).
