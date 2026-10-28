@@ -231,7 +231,14 @@ correctness failure: the UTF-8 character was inside one chunk, and rename/edit
 were separate commits. Corrected the fixture to put `é` at offsets 6–7 across a
 seven-byte boundary and renamed/edited the same file in one commit. Focused
 checks and all three defect probes passed; the full suite and archive were
-regenerated. Follow-up review results are recorded below.
+regenerated. Follow-up Spec review through `29d3bdd`: **0 outstanding findings**.
+The reviewer independently reran both affected checks and verified all 23 records,
+source hashes, defect probes and full-suite pass. Follow-up Standards review:
+**0 documented violations, 0 actionable smells** through the same commit.
+
+Final axis totals: Standards 0 findings; Spec 0 outstanding findings (2 initial
+fixture gaps resolved). Only review/handoff documentation changed after review.
+`git diff --check` and all seven preserved-local-file hashes passed.
 
 Only #19 is implemented. Draft PR preparation does not mark it ready, merge it,
 or close the issue. Next ticket, **not started**:
