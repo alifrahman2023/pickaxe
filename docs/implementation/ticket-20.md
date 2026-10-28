@@ -220,8 +220,27 @@ no premature production C++ helper framework was introduced.
 
 ## Review and handoff
 
-Independent Standards and Spec review results are recorded after review against
-#20's fixed starting commit. Only #19 and #20 are included in this draft PR.
+Applied the code-review skill with independent parallel reviewers against
+`8296457bafa48f065d98a58387bff734304c201e...9881e46` (one implementation commit).
+
+### Standards
+
+Pass: **0 documented violations, 0 actionable smell findings**. The reviewer
+independently ran all 11 containment/replay checks, verified archive source
+hashes and 29 records, and checked whitespace.
+
+### Spec
+
+Pass: **0 findings**. The reviewer independently ran all 11 checks and verified
+all required gate cases, the four rejected defective bridges, raw source-pinned
+evidence and the full-suite 29/29 pass. The retained initial ordering observation
+shows reference/replay already agreed; correcting the auxiliary assertion did
+not weaken the reference oracle.
+
+Standards: 0 findings; Spec: 0 findings; neither axis has an outstanding issue.
+Only review/handoff documentation changed after review. `git diff --check` and
+all seven preserved-local-file hashes passed. Only #19 and #20 are included in
+this draft PR.
 Do not mark ready, merge, close either issue, or start another ticket here.
 
 Next ticket, **not started**:
