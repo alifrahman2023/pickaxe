@@ -45,3 +45,20 @@ validated the 34-record bundle. No other requested improvement is missing.
 
 Only this review/handoff note was added after review. Hosted execution is
 reported separately on PR #51; local success alone is not a hosted CI result.
+
+## Self-test execution review follow-up
+
+A subsequent review found that a zero self-test exit status still accepted
+`OK (skipped=8)`. Fixed in `f00a110`: shared validation now checks a nonempty
+source-derived inventory captured before launch, exactly one matching execution
+count, no skips and a plain successful completion summary. Collection rejects
+invalid self-tests before building; archive verification applies the same rule.
+Schema 2 retains that inventory; older schema-1 collector bundles require a fresh
+run for the stronger verification.
+
+The regression suite grew to **13 validator tests**, all passing alongside the
+**34 suite checks**. Actual skipped-suite and missing-entrypoint subprocess
+probes failed before configuration and preserved the previous `latest` archive.
+Independent Standards and Spec reviews against `21e22ad...f00a110` both pass with
+zero findings; each reran the 13 tests and verified current-source evidence.
+Only this review/handoff note changed after review.
