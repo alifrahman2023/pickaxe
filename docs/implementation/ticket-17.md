@@ -104,9 +104,31 @@ was introduced.
 
 ## Review and handoff
 
-Independent Standards and Spec reviews are pending at the implementation commit.
-The PR will cover #16/#17 and include closing references for both; it remains
-unmerged for owner review. The planning map and resolved decisions are unchanged.
+Applied the code-review skill with independent parallel Standards and Spec
+reviewers against `ab5aaff526cbda6ee55b174ab76ff10f2ff247d6...addc30d`.
+Commits reviewed: `7f25f58`, `3ba7ebd`, and `addc30d`. Only this review record
+changes after review.
+
+### Standards
+
+Pass: **0 documented violations, 0 actionable smell findings**. The combined
+diff follows repository guidance/glossary, uses the approved CLI-process seam,
+preserves local work, and records the owner-authorized combined-ticket workflow.
+No unjustified abstraction or product option was introduced.
+
+### Spec
+
+Pass: **0 findings**. Both tickets' completion checks are satisfied, including
+byte arguments, occurrence counts, configured/bare fallback, resource
+preservation, and failures after plausible output. The reviewer verified all
+16 raw test records, all 14 literal searches, and the matching fixture-source
+hash, then independently reran CTest: **16/16 checks passed**.
+
+Standards: 0 findings; Spec: 0 findings; neither axis has an outstanding issue.
+`git diff --check` passed and the preserved local files' SHA-256 checks remained
+unchanged. The PR covers #16/#17 and includes closing references for both; it
+remains unmerged for owner review. The planning map and resolved decisions are
+unchanged.
 
 Next ticket: [#18 — M1 / T03 — Verify cancellation and Git process ownership](https://github.com/alifrahman2023/pickaxe/issues/18),
 verified open and not started. Full process-ownership/terminal cancellation,
