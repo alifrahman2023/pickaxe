@@ -186,3 +186,17 @@ The follow-on [ticket #17 evidence](docs/implementation/ticket-17.md) records
 the extended checks and retained raw comparison bundle in the same PR.
 [Ticket #18 evidence](docs/implementation/ticket-18.md) records the completed
 cancellation/descriptor checks, current handoff, and raw process traces.
+
+The development-only [ticket #19 containment model](docs/implementation/ticket-19.md)
+checks complete blob associations against independent tree snapshots and matches
+against Git. Run it without building or enabling an accelerator:
+
+```sh
+python3 tests/candidate_containment.py --evidence-dir build/evidence/candidate-containment -v
+```
+
+Its trace includes actual candidates, reference matches, coverage, associations,
+and conservative bypasses. The Python model intentionally loads tiny fixtures
+into memory; it is not the bounded C++ index builder. The same evidence note
+includes runnable Git object and C++ byte-string demonstrations. Ordered replay,
+eligibility implementation, and publication investigations remain later tickets.

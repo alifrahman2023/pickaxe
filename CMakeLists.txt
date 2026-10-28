@@ -18,4 +18,8 @@ if(BUILD_TESTING)
             --pk "$<TARGET_FILE:pk>"
             --evidence-dir "${CMAKE_CURRENT_BINARY_DIR}/evidence/cli-baseline")
     set_tests_properties(cli_baseline PROPERTIES TIMEOUT 30)
+    add_test(NAME candidate_containment
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/candidate_containment.py"
+            --evidence-dir "${CMAKE_CURRENT_BINARY_DIR}/evidence/candidate-containment")
+    set_tests_properties(candidate_containment PROPERTIES TIMEOUT 30)
 endif()
