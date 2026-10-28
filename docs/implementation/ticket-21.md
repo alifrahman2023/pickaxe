@@ -206,8 +206,27 @@ and environment. Attributes independently select per-path interpretation.
 
 ## Review and handoff
 
-Independent Standards and Spec reviews use #21's fixed starting commit. Their
-results are recorded after review. Only #19/#20/#21 belong to this draft PR.
+Applied the code-review skill with independent parallel reviewers against
+`ec8c0d875c7639d44bd8765efb51b479b7635efc...399a8f0` (one implementation commit).
+
+### Standards
+
+Pass: **0 documented violations, 0 actionable smell findings**. The reviewer
+independently reran all five dependency probes and verified the archive's source
+hashes, 34 records and whitespace check.
+
+### Spec
+
+Pass: **0 findings**. The reviewer independently reran all five probes and
+verified the inventory's required classes, unchanged reference settings,
+Apple-specific limitations, 34 records and 34/34 full-suite pass. The initial
+conditional fixture correction did not weaken any containment/replay oracle.
+Final parser/provenance work and actual rejection qualification remain #34/Q.C.
+
+Standards: 0 findings; Spec: 0 findings; neither axis has an outstanding issue.
+Only review/handoff documentation changed after review. `git diff --check` and
+all seven preserved-local-file hashes passed. Only #19/#20/#21 belong to this
+draft PR.
 Stop before marking ready, merging, closing issues or starting another ticket.
 
 Next ticket, **not started**:
