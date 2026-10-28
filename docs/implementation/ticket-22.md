@@ -202,6 +202,11 @@ environment/API documentation identities and source-capture provenance. Validate
 python3 scripts/check.py verify docs/implementation/evidence/ticket-22.json.gz --current-sources
 ```
 
+Collection preceded the implementation commit: the bundle records the starting
+revision and dirty working-tree status, with source hashes identifying the tested
+contents. Current-source verification binds those contents to this committed
+implementation. Only review/handoff documentation changed after that full run.
+
 ## Remaining qualification and handoff
 
 #31–#33 own canonical resource/alias coordination, real format validation,
@@ -221,5 +226,29 @@ merging, closing #22 or starting another ticket.
 
 ## Review
 
-Independent Standards and Spec review against the recorded starting commit is
-required before the draft handoff. Results are recorded below after review.
+Applied the code-review skill with independent parallel Standards and Spec
+reviewers against `efd3ca7c08152886073b7b612519b754a92191f9...9d44a80`.
+
+### Standards
+
+Pass: **0 documented violations, 0 actionable smell findings**. The reviewer
+confirmed guidance/glossary/build conventions, test-only scope, source-pinned
+evidence and the distinction between observed behavior and qualification.
+Independently reran **8/8 publication checks**, verified the **42-check** archive
+against current sources and passed `git diff --check`. No concrete correctness
+defect was found within the experiment scope.
+
+### Spec
+
+Pass: **0 findings**. The reviewer confirmed the required lock/helper,
+hardlink/reader, synchronization/order, failure-state and environment/limit
+coverage; later lifecycle/full faults and Linux work remain deferred.
+Independently reran **8/8 publication checks**, verified **42 suite records** and
+the **16 validator-test inventory**, the inheritance mutant failure, and all
+**seven original local-file hashes**. No missing/partial requirement, scope
+creep or incorrect implementation was found within #22's investigation scope.
+
+Final axis totals: Standards 0 findings; Spec 0 findings. Only review/handoff
+documentation changed after review. The archive's current-source verification,
+whitespace check and original local-file hash verification passed afterward.
+The new PR remains draft; #22 and its blocking edge to #23 stay open/intact.
