@@ -87,3 +87,18 @@ This continues draft PR #52 from `43265f18f6a2575749276b93098ef565ccaf9ef4`.
 #22 remains open, the PR stays draft, and #23 remains unstarted. The earlier
 #22 archive describes its original tested sources; a fresh shared run records
 the changed tooling without rewriting that historical archive.
+
+The shared Release build passed all **42 suite checks and 17 validator tests**,
+with no skips. `verify build/checks/evidence/latest.json.gz --current-sources`
+and `git diff --check` passed. The other six original local guidance files retain
+their original hashes; AGENTS.md changed only by the requested local pointer.
+
+Independent code-review axes against `43265f1...9e25576` both passed:
+
+- **Standards:** 0 documented violations, 0 actionable smell findings. The reviewer
+  independently reran all 17 validator tests and verified 42 current-source records.
+- **Spec:** 0 missing/partial requirements, scope-creep or incorrect-implementation
+  findings. The reviewer independently reran the streaming regression and verified
+  the current-source evidence.
+
+Only this validation/review note changed after review.
