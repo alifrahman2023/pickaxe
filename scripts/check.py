@@ -19,6 +19,7 @@ SUITES = {'cli_baseline': 'tests/cli_baseline.py',
           'candidate_containment': 'tests/candidate_containment.py'}
 MODEL_SOURCES = {'tests/candidate_containment.py', 'tests/fixtures/candidate_model.py',
                  'tests/fixtures/ordered_replay.py'}
+TOOL_TEST_SOURCE = 'tests/check_evidence.py'
 
 
 def sha256(path):
@@ -37,10 +38,21 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def verify_tool_tests(status, log, expected):
+    require(status == 0, 'evidence tool self-tests failed')
+    require(isinstance(expected, list) and expected and all(isinstance(n, str) for n in expected)
+            and len(set(expected)) == len(expected), 'self-test inventory missing/empty/duplicate')
+    require(not re.search(r'\bskipped=[1-9]\d*', log), 'evidence tool self-tests skipped')
+    counts = [int(n) for n in re.findall(r'Ran (\d+) tests? in', log)]
+    require(counts == [len(expected)], 'self-test execution count differs from declared inventory')
+    require(re.search(r'^OK\s*$', log, re.MULTILINE), 'self-tests have no successful completion summary')
+
+
 def verify(bundle, current_sources=False):
-    require(bundle['schema'] == 1, 'unsupported evidence schema')
+    require(bundle['schema'] == 2, 'unsupported evidence schema')
     require(bundle['ctest_status'] == 0, 'CTest failed')
-    require(bundle['tool_test_status'] == 0, 'evidence tool self-tests failed')
+    verify_tool_tests(bundle['tool_test_status'], bundle['tool_test_log'],
+                      bundle.get('expected_tool_tests'))
     junit = ET.fromstring(bundle['junit'])
     cases = junit.findall('.//testcase')
     require(sorted(c.attrib['name'] for c in cases) == sorted(SUITES), 'missing/extra CTest entries')
@@ -82,6 +94,8 @@ def verify(bundle, current_sources=False):
             source = (ROOT / path).resolve()
             require(ROOT in source.parents, 'source path outside repository')
             require(sha256(source) == digest, f'changed source: {path}')
+        require(expected_tests(ROOT / TOOL_TEST_SOURCE) == bundle['expected_tool_tests'],
+                'current self-test inventory differs')
         require({group: expected_tests(ROOT / path) for group, path in SUITES.items()}
                 == bundle['expected_tests'], 'current test inventory differs')
     return total
@@ -103,9 +117,11 @@ def run(build):
     output.mkdir(parents=True, exist_ok=True)
     attempt = Path(tempfile.mkdtemp(prefix='run-', dir=output))
     print(f'Evidence attempt: {attempt}', flush=True)
-    tool_status = execute([sys.executable, str(ROOT / 'tests/check_evidence.py'), '-v'],
+    tool_inventory = expected_tests(ROOT / TOOL_TEST_SOURCE)
+    tool_status = execute([sys.executable, str(ROOT / TOOL_TEST_SOURCE), '-v'],
                           attempt / 'tool-tests.log')
-    require(tool_status == 0, f'evidence tool self-tests failed; see {attempt}')
+    tool_log = (attempt / 'tool-tests.log').read_text()
+    verify_tool_tests(tool_status, tool_log, tool_inventory)
     commands = [
         ['cmake', '-S', str(ROOT), '-B', str(build), '-G', 'Unix Makefiles',
          '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_CXX_COMPILER=/usr/bin/clang++',
@@ -124,7 +140,7 @@ def run(build):
     status = execute(['ctest', '--test-dir', str(build), '--output-on-failure', '-V',
                       '--output-junit', str(attempt / 'ctest.xml')], attempt / 'ctest.log')
     require(status == 0, f'CTest failed; partial evidence retained at {attempt}')
-    bundle = dict(schema=1, qualification=False, source_root=str(ROOT),
+    bundle = dict(schema=2, qualification=False, source_root=str(ROOT),
                   revision=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
                   worktree_status=subprocess.check_output(['git', 'status', '--short'], cwd=ROOT).decode(),
                   platform=platform.platform(), python=platform.python_version(),
@@ -132,7 +148,7 @@ def run(build):
                   git_build=subprocess.check_output([git, 'version', '--build-options']).decode(),
                   configure_log=(attempt / 'configure.log').read_text(),
                   build_log=(attempt / 'build.log').read_text(),
-                  tool_test_status=tool_status, tool_test_log=(attempt / 'tool-tests.log').read_text(),
+                  tool_test_status=tool_status, tool_test_log=tool_log, expected_tool_tests=tool_inventory,
                   ctest_status=status, ctest_log=(attempt / 'ctest.log').read_text(),
                   junit=(attempt / 'ctest.xml').read_text(),
                   expected_tests={group: expected_tests(ROOT / path) for group, path in SUITES.items()},

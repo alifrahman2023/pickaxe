@@ -11,7 +11,9 @@ SPEC.loader.exec_module(CHECK)
 class EvidenceValidation(unittest.TestCase):
     def setUp(self):
         self.bundle = dict(
-            schema=1, ctest_status=0, tool_test_status=0,
+            schema=2, ctest_status=0, tool_test_status=0,
+            expected_tool_tests=['ToolFixture.test_example'],
+            tool_test_log='Ran 1 test in 0.1s\n\nOK\n',
             junit='<testsuite><testcase name="cli_baseline"/><testcase name="candidate_containment"/></testsuite>',
             ctest_log='Ran 1 test in 0.1s\nOK\nRan 1 test in 0.1s\nOK\n',
             expected_tests={group: ['Fixture.test_example'] for group in CHECK.SUITES},
@@ -61,6 +63,34 @@ class EvidenceValidation(unittest.TestCase):
     def test_failed_run_is_rejected_even_with_complete_records(self):
         self.bundle['ctest_status'] = 1
         with self.assertRaisesRegex(ValueError, 'CTest failed'):
+            CHECK.verify(self.bundle)
+
+    def test_skipped_tool_self_tests_are_rejected(self):
+        self.bundle['tool_test_log'] = 'Ran 1 test in 0.1s\n\nOK (skipped=1)\n'
+        with self.assertRaisesRegex(ValueError, 'self-tests skipped'):
+            CHECK.verify(self.bundle)
+
+    def test_missing_or_zero_tool_execution_is_rejected(self):
+        for log in ('', 'Ran 0 tests in 0.1s\n\nOK\n'):
+            with self.subTest(log=log):
+                self.bundle['tool_test_log'] = log
+                with self.assertRaisesRegex(ValueError, 'self-test execution count'):
+                    CHECK.verify(self.bundle)
+
+    def test_partial_tool_execution_is_rejected(self):
+        self.bundle['expected_tool_tests'].append('ToolFixture.test_another')
+        with self.assertRaisesRegex(ValueError, 'self-test execution count'):
+            CHECK.verify(self.bundle)
+
+    def test_incomplete_tool_summary_is_rejected(self):
+        self.bundle['tool_test_log'] = 'Ran 1 test in 0.1s\n'
+        with self.assertRaisesRegex(ValueError, 'completion summary'):
+            CHECK.verify(self.bundle)
+
+    def test_empty_tool_inventory_is_rejected(self):
+        self.bundle['expected_tool_tests'] = []
+        self.bundle['tool_test_log'] = 'Ran 0 tests in 0.1s\n\nOK\n'
+        with self.assertRaisesRegex(ValueError, 'self-test inventory'):
             CHECK.verify(self.bundle)
 
     def test_skipped_checks_are_rejected(self):

@@ -17,13 +17,17 @@ and retains its logs. `latest.json.gz` changes only after a successful run.
 The two registered fixture suites have evidence records for every declared test.
 The collector derives expected names from their source, rejects missing/duplicate
 records, failed/skipped checks and inconsistent source/Git/binary hashes, checks
-execution counts, and verifies the gzip round trip. Each new suite with evidence
+execution counts, and verifies the gzip round trip. Validator self-tests must also report a plain
+successful completion, no skips, and an execution count matching the source-derived
+inventory captured before launch; a zero exit status alone is insufficient. Each new suite with evidence
 must be registered in `scripts/check.py`. A new testcase in an existing suite is
 discovered automatically. Collection is deliberately fixture-sized and unbounded;
 it is not the production indexing memory ledger or qualification tooling.
 
 `verify` checks a saved bundle's consistency without comparing to today's source.
-Use `--current-sources` when validating a current run. Historical ticket #17–#21
+Use `--current-sources` when validating a current run. The current collector writes schema 2 with the declared self-test inventory.
+Earlier collector schema-1 bundles lack that inventory and must be regenerated
+for this stricter validation. Historical ticket #17–#21
 archives use their original schemas; this tool does not rewrite or validate them.
 Hashes and manifests detect mistakes, not fabricated or malicious evidence.
 
