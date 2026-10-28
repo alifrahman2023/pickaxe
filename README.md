@@ -103,6 +103,40 @@ an exact failure status, and basic cancellation; they add no product options.
 Fixtures isolate Git configuration for construction, and give Pickaxe and the
 reference identical inputs, including the configuration/environment test.
 
+The extended baseline checks 14 literal byte cases (including composed and
+decomposed Unicode and invalid UTF-8), occurrence-count changes, binary blobs
+containing NUL, configured bare-repository fallback, and real Git failure after
+output. Run those demonstrations directly:
+
+```sh
+python3 tests/cli_baseline.py --pk ./build/pk \
+  --evidence-dir ./build/evidence/demo \
+  CliBaseline.test_literal_argument_bytes \
+  CliBaseline.test_occurrence_counts_instead_of_matching_lines \
+  CliBaseline.test_bare_repository_complete_fallback_leaves_resources_untouched \
+  CliBaseline.test_real_git_failure_after_output_is_unsuccessful -v
+```
+
+CMake's CTest entry retains hexadecimal argument/stdout/stderr bytes, status,
+fixture-source/executable hashes, configuration, and refs in
+`build/evidence/cli-baseline/*.json`. Hex encoding is lossless; output is compared
+as raw bytes before encoding. Temporary repositories are recreated on each run.
+The evidence represents the tests run, not a qualification of acceleration.
+
+A byte string need not be valid Unicode. C++ `std::string` owns bytes, while a
+Unicode string represents characters; this CLI does not decode, normalize, or
+case-fold the needle. A NUL byte ends a native CLI argument, so NUL is tested
+inside blob contents instead. The selected Git still interprets its arguments
+according to its effective configuration. On this macOS Git, the fixture's
+`core.precomposeunicode=true` affects decomposed needles. The oracle retains
+that setting; an external executable also verifies the exact forwarded bytes.
+
+Moving or editing a line while keeping a needle's count unchanged need not
+select the commit with `-S`. The count demonstration contrasts that result with
+Git's line-based `-G` search. This is a test demonstration, not a product mode.
+Bare repositories and custom output work through complete Git fallback; support
+does not imply acceleration qualification.
+
 `src/main.cpp` owns argument bytes in `std::string` objects. A null-terminated
 pointer array borrows their storage until `execv`; strings are not mutated after
 pointers are taken. Combining `-S` and the needle into one argument preserves
@@ -114,3 +148,5 @@ as Git. More detailed real-Git/helper/process-group evidence remains ticket #18.
 Ticket [#16](https://github.com/alifrahman2023/pickaxe/issues/16) evidence,
 review baseline, limitations, and continuation are in
 [docs/implementation/ticket-16.md](docs/implementation/ticket-16.md).
+The follow-on [ticket #17 evidence](docs/implementation/ticket-17.md) records
+the extended checks and retained raw comparison bundle in the same PR.

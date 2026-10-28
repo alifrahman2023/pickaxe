@@ -15,6 +15,7 @@ if(BUILD_TESTING)
     find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
     add_test(NAME cli_baseline
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_baseline.py"
-            --pk "$<TARGET_FILE:pk>")
+            --pk "$<TARGET_FILE:pk>"
+            --evidence-dir "${CMAKE_CURRENT_BINARY_DIR}/evidence/cli-baseline")
     set_tests_properties(cli_baseline PROPERTIES TIMEOUT 30)
 endif()

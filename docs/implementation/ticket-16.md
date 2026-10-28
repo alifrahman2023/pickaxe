@@ -4,6 +4,8 @@ Scope: [M1 / T01 — Build and install a minimal complete Git-backed search](htt
 under [specification #15](https://github.com/alifrahman2023/pickaxe/issues/15).
 Execution date: 2026-10-28. This is baseline implementation evidence, not
 acceleration qualification or first-release acceptance.
+The owner subsequently authorized #17 in the same PR; its evidence and current
+handoff are in [ticket-17.md](ticket-17.md).
 
 ## Review baseline and local work
 
@@ -111,7 +113,8 @@ The tested executable SHA-256 was
 Applied the code-review skill with two independent parallel reviewers against
 `ab5aaff526cbda6ee55b174ab76ff10f2ff247d6...7f25f5886358c11ecc4e89ade32837d182801f77`.
 The commit was `7f25f58 Implement complete Git-backed search for #16`.
-Only this evidence record changes after review.
+At the #16 handoff, only this evidence record changed after review. Subsequent
+#17 test/documentation changes receive the review recorded in ticket-17.md.
 
 ### Standards
 
@@ -134,15 +137,14 @@ unchanged; only the five explicit ticket paths are committed.
 
 ## Pending evidence and next ticket
 
-The broader literal-byte/fallback/status catalogue is **pending #17**; complete
+The broader literal-byte/fallback/status catalogue was pending at the #16
+handoff and is now delivered in [ticket #17](ticket-17.md); complete
 real-Git/helper/terminal/process-ownership cancellation evidence is **pending
 #18**. Candidate/replay feasibility, indexing, checksum integration, memory and
 publication audits, acceleration qualification, benchmarks, Linux preparation,
 and two-platform release evidence remain pending in their assigned tickets.
 Passing this baseline does not satisfy those obligations or enable acceleration.
 
-Next ticket after owner review and completion of #16:
-[#17 — M1 / T02 — Verify literal bytes, complete fallback, and failure status](https://github.com/alifrahman2023/pickaxe/issues/17).
-It was verified open; do not start it while this ticket is under review. Do not
-merge this branch, close #16, or modify the planning map/resolved decisions as
-part of this implementation session.
+The owner authorized combining #16/#17 in PR #50, with both issues closing when
+the PR is merged. The native dependency edge remains recorded. Current next
+ticket is #18; it has not been started. The PR remains unmerged for owner review.
