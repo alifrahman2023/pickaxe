@@ -14,7 +14,7 @@ it. It self-tests evidence validation, configures a Release build, compiles, run
 under that build tree's `evidence/run-*` directory. A failed run returns nonzero
 and retains its logs. `latest.json.gz` changes only after a successful run.
 
-The two registered fixture suites have evidence records for every declared test.
+The three registered fixture suites have evidence records for every declared test.
 The collector derives expected names from their source, rejects missing/duplicate
 records, failed/skipped checks and inconsistent source/Git/binary hashes, checks
 execution counts, and verifies the gzip round trip. Validator self-tests must also report a plain
@@ -23,6 +23,11 @@ inventory captured before launch; a zero exit status alone is insufficient. Each
 must be registered in `scripts/check.py`. A new testcase in an existing suite is
 discovered automatically. Collection is deliberately fixture-sized and unbounded;
 it is not the production indexing memory ledger or qualification tooling.
+The publication suite builds a disposable macOS-only C++ probe, records its
+binary and C++/Python source hashes, and exercises local APFS behavior. It is
+neither linked into nor installed with `pk`. See the [#22 protocol report](implementation/ticket-22.md)
+for ordering, failure states and qualification limits. Bundles made before this
+suite was registered must be regenerated to meet the expanded suite inventory.
 
 `verify` checks a saved bundle's consistency without comparing to today's source.
 Use `--current-sources` when validating a current run. The current collector writes schema 2 with the declared self-test inventory.

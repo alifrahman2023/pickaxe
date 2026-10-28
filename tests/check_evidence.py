@@ -14,13 +14,15 @@ class EvidenceValidation(unittest.TestCase):
             schema=2, ctest_status=0, tool_test_status=0,
             expected_tool_tests=['ToolFixture.test_example'],
             tool_test_log='Ran 1 test in 0.1s\n\nOK\n',
-            junit='<testsuite><testcase name="cli_baseline"/><testcase name="candidate_containment"/></testsuite>',
-            ctest_log='Ran 1 test in 0.1s\nOK\nRan 1 test in 0.1s\nOK\n',
+            junit='<testsuite>' + ''.join(f'<testcase name="{group}"/>' for group in CHECK.SUITES) + '</testsuite>',
+            ctest_log='Ran 1 test in 0.1s\nOK\n' * len(CHECK.SUITES),
             expected_tests={group: ['Fixture.test_example'] for group in CHECK.SUITES},
             sources={path: 'original' for path in [*CHECK.SUITES.values(), 'tests/helpers/controlled_textconv.py',
                                                                  'tests/fixtures/candidate_model.py',
-                                                                 'tests/fixtures/ordered_replay.py']},
+                                                                 'tests/fixtures/ordered_replay.py',
+                                                                 'tests/helpers/publication_probe.cpp']},
             source_root='/historical/checkout', git_sha256='git', pk_sha256='pk',
+            publication_probe_sha256='probe',
             records={
                 'cli_baseline': [dict(test='__main__.Fixture.test_example',
                                       fixture_source_sha256='original', textconv_source_sha256='original',
@@ -28,10 +30,14 @@ class EvidenceValidation(unittest.TestCase):
                 'candidate_containment': [dict(test='__main__.Fixture.test_example', git_sha256='git',
                                               source_sha256={'tests/candidate_containment.py': 'original',
                                                              'tests/fixtures/candidate_model.py': 'original',
-                                                             'tests/fixtures/ordered_replay.py': 'original'})]})
+                                                             'tests/fixtures/ordered_replay.py': 'original'})],
+                'publication_protocol': [dict(test='__main__.Fixture.test_example', git_sha256='git',
+                                             probe_sha256='probe',
+                                             source_sha256={'tests/publication_protocol.py': 'original',
+                                                            'tests/helpers/publication_probe.cpp': 'original'})]})
 
     def test_historical_bundle_does_not_require_current_checkout_hashes(self):
-        self.assertEqual(CHECK.verify(self.bundle), 2)
+        self.assertEqual(CHECK.verify(self.bundle), len(CHECK.SUITES))
         with self.assertRaisesRegex(ValueError, 'changed source'):
             CHECK.verify(self.bundle, current_sources=True)
 
@@ -58,6 +64,21 @@ class EvidenceValidation(unittest.TestCase):
     def test_wrong_source_hash_is_rejected(self):
         self.bundle['sources']['tests/cli_baseline.py'] = 'different'
         with self.assertRaisesRegex(ValueError, 'source hash mismatch'):
+            CHECK.verify(self.bundle)
+
+    def test_missing_publication_cpp_hash_is_rejected(self):
+        del self.bundle['records']['publication_protocol'][0]['source_sha256']['tests/helpers/publication_probe.cpp']
+        with self.assertRaisesRegex(ValueError, 'source metadata incomplete'):
+            CHECK.verify(self.bundle)
+
+    def test_changed_publication_cpp_hash_is_rejected(self):
+        self.bundle['records']['publication_protocol'][0]['source_sha256']['tests/helpers/publication_probe.cpp'] = 'changed'
+        with self.assertRaisesRegex(ValueError, 'source hash mismatch'):
+            CHECK.verify(self.bundle)
+
+    def test_wrong_publication_binary_is_rejected(self):
+        self.bundle['records']['publication_protocol'][0]['probe_sha256'] = 'changed'
+        with self.assertRaisesRegex(ValueError, 'probe binary hash mismatch'):
             CHECK.verify(self.bundle)
 
     def test_failed_run_is_rejected_even_with_complete_records(self):

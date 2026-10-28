@@ -15,6 +15,10 @@ if(BUILD_TESTING)
     set(PICKAXE_EVIDENCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/evidence" CACHE PATH
         "Development test evidence directory")
     find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+    add_executable(publication_probe tests/helpers/publication_probe.cpp)
+    set_target_properties(publication_probe PROPERTIES
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    target_compile_options(publication_probe PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME cli_baseline
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_baseline.py"
             --pk "$<TARGET_FILE:pk>"
@@ -24,4 +28,9 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/candidate_containment.py"
             --evidence-dir "${PICKAXE_EVIDENCE_DIR}/candidate-containment")
     set_tests_properties(candidate_containment PROPERTIES TIMEOUT 30)
+    add_test(NAME publication_protocol
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/publication_protocol.py"
+            --probe "$<TARGET_FILE:publication_probe>"
+            --evidence-dir "${PICKAXE_EVIDENCE_DIR}/publication-protocol")
+    set_tests_properties(publication_protocol PROPERTIES TIMEOUT 30)
 endif()
