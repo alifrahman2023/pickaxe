@@ -214,3 +214,18 @@ python3 tests/candidate_containment.py \
 Passing these tiny fixtures establishes feasibility on this tested environment;
 it enables no product acceleration. Eligibility implementation, publication
 investigations, production indexing and full qualification remain pending.
+
+
+The [initial dependency inventory](docs/implementation/eligibility-inventory.md)
+and [ticket #21 experiments](docs/implementation/ticket-21.md) identify effective
+config/attribute sources and conservative eligibility limits. Five development
+checks exercise scopes/includes/environment, attribute text conversion, custom
+output, rename/submodule settings, and incomplete inspection. No eligibility
+parser or product acceleration is enabled:
+
+```sh
+python3 tests/candidate_containment.py \
+  Containment.test_dependencies_config_sources_and_environment_precedence \
+  Containment.test_dependencies_attribute_sources_and_text_conversion \
+  Containment.test_dependencies_output_profiles_against_early_replay -v
+```

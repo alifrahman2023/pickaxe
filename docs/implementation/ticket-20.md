@@ -247,3 +247,8 @@ Next ticket, **not started**:
 [#21 — Investigate effective dependencies for eligibility](https://github.com/alifrahman2023/pickaxe/issues/21).
 #22's macOS publication investigation also remains pending. Product search
 continues complete Git fallback with no force-acceleration option.
+
+
+Continuation: the owner subsequently authorized #21 in the same draft PR.
+Its [dependency investigation](ticket-21.md) records the next completed slice
+and current handoff. The #20 archive remains historical version-2 gate evidence.

@@ -42,7 +42,10 @@ class Containment(unittest.TestCase):
         result = subprocess.run([GIT, *args], cwd=cwd or self.repo, env=self.env,
                                 input=input, capture_output=True, timeout=10)
         self.commands.append(dict(argv_hex=[os.fsencode(a).hex() for a in [GIT, *args]],
-                                  cwd=str(cwd or self.repo), stdin_hex=None if input is None else input.hex(),
+                                  cwd=str(cwd or self.repo),
+                                  environment={k: v for k, v in self.env.items()
+                                               if k.startswith('GIT_') or k in ('PATH', 'LC_ALL', 'TZ')},
+                                  stdin_hex=None if input is None else input.hex(),
                                   status=result.returncode, stdout_hex=result.stdout.hex(),
                                   stderr_hex=result.stderr.hex()))
         return result
@@ -60,7 +63,7 @@ class Containment(unittest.TestCase):
         sources = [Path(__file__), Path(__file__).parent / 'fixtures/candidate_model.py',
                    Path(__file__).parent / 'fixtures/ordered_replay.py']
         (ARGS.evidence_dir / (self._testMethodName + '.json')).write_text(json.dumps(dict(
-            version=2, test=self.id(), git=GIT,
+            version=3, test=self.id(), git=GIT,
             git_sha256=hashlib.sha256(Path(GIT).read_bytes()).hexdigest(),
             source_sha256={str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
             environment={k: v for k, v in self.env.items()
@@ -156,6 +159,191 @@ class Containment(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout),
                          (reference.returncode, reference.stdout), trace)
         return trace
+
+    def observe_dependency_profile(self, model, needle, classification):
+        from fixtures.ordered_replay import ordered_replay
+        trace = model.query(needle)
+        matches = self.git('--no-pager', 'log', '--all', '--format=%H',
+                           b'-S' + needle, '--').decode().splitlines()
+        reference = self.run_git('--no-pager', 'log', '--all', b'-S' + needle, '--')
+        replay = ordered_replay(self.run_git, needle, trace['scope'], trace['candidates'])
+        trace.update(path='dependency-profile-observation', classification=classification,
+                     gate_implemented=False, reference_matches=matches,
+                     containment=set(matches) <= set(trace['candidates']),
+                     stdout_equal=reference.stdout == replay.stdout,
+                     reference_status=reference.returncode, replay_status=replay.returncode,
+                     reference_stdout_hex=reference.stdout.hex(), replay_stdout_hex=replay.stdout.hex())
+        self.traces.append(trace)
+        self.assertEqual(reference.returncode, 0)
+        self.assertEqual(replay.returncode, 0)
+        return trace
+
+    def test_dependencies_attribute_sources_and_text_conversion(self):
+        root = self.commit('raw before', {'content': b'raw-before'})
+        self.commit('raw after', {'content': b'raw-after'})
+        model = CandidateModel(self.git)
+        converter = self.repo / '.git' / 'attribute-converter.py'
+        converter.write_text("import pathlib,sys\np=pathlib.Path(sys.argv[1]).read_bytes()\n"
+                             "sys.stdout.buffer.write(b'converted-only' if p == b'raw-before' else b'other')\n")
+        global_attributes = self.repo / '.git' / 'global-attributes'
+        global_attributes.write_text('content diff=global\n')
+        self.git('config', 'core.attributesFile', str(global_attributes))
+        for driver in ('global', 'worktree', 'info'):
+            self.git('config', 'diff.' + driver + '.textconv',
+                     shlex.join([sys.executable, str(converter)]))
+        self.assertEqual(self.git('check-attr', '-z', '--stdin', 'diff', input=b'content\0'),
+                         b'content\0diff\0global\0')
+        (self.repo / '.gitattributes').write_text('content diff=worktree\n')
+        self.assertEqual(self.git('check-attr', '-z', '--stdin', 'diff', input=b'content\0'),
+                         b'content\0diff\0worktree\0')
+        (self.repo / '.git' / 'info' / 'attributes').write_text('content diff=info\n')
+        self.assertEqual(self.git('check-attr', '-z', '--stdin', 'diff', input=b'content\0'),
+                         b'content\0diff\0info\0')
+        self.git('config', '--includes', '--show-origin', '--show-scope', '--list')
+        trace = self.observe_dependency_profile(model, b'converted-only', 'reject-applicable-textconv')
+        self.assertIn(root, trace['reference_matches'])
+        self.assertEqual(trace['candidates'], [])
+        self.assertFalse(trace['containment'])
+        self.assertFalse(trace['stdout_equal'])
+
+    def test_dependencies_output_profiles_against_early_replay(self):
+        self.commit('root caf\u00e9', {'content': b'needle'})
+        self.commit('remove', {'content': b'other'})
+        model = CandidateModel(self.git)
+        plain = self.git('--no-pager', 'log', '--all', '-Sneedle', '--')
+        cases = [('format.pretty', 'format:%S:%H', 'reject-custom-source-format'),
+                 ('color.ui', 'always', 'reject-explicit-color'),
+                 ('log.decorate', 'full', 'reject-decoration'),
+                 ('log.date', 'iso', 'reject-nondefault-date'),
+                 ('i18n.logOutputEncoding', 'ISO-8859-1', 'reject-nondefault-output-encoding')]
+        for key, value, classification in cases:
+            with self.subTest(key=key):
+                self.git('config', key, value)
+                self.git('config', '--includes', '--show-origin', '--show-scope', '--list')
+                trace = self.observe_dependency_profile(model, b'needle', classification)
+                output = bytes.fromhex(trace['reference_stdout_hex'])
+                self.assertNotEqual(output, plain)
+                if key == 'format.pretty':
+                    self.assertFalse(trace['stdout_equal'])
+                    self.assertIn(b'refs/heads/main', output)
+                elif key == 'color.ui':
+                    self.assertIn(b'\x1b[', output)
+                elif key == 'i18n.logOutputEncoding':
+                    self.assertIn(b'caf\xe9', output)
+                self.git('config', '--unset', key)
+
+    def test_dependencies_rename_and_submodule_settings(self):
+        root = self.commit('root', {'content': b'needle'})
+        os.rename(self.repo / 'content', self.repo / 'renamed')
+        rename = self.commit('rename', {})
+        self.git('update-index', '--add', '--cacheinfo', '160000,' + root + ',module')
+        self.git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'gitlink addition')
+        gitlink = self.git('rev-parse', 'HEAD').strip().decode()
+        model = CandidateModel(self.git)
+        for value in ('true', 'false'):
+            self.git('config', 'diff.renames', value)
+            trace = self.observe_dependency_profile(model, b'needle',
+                                                     'rename-' + value + '-observation')
+            self.assertEqual(rename in trace['reference_matches'], value == 'false')
+            self.assertIn(rename, trace['candidates'])
+            self.assertTrue(trace['containment'])
+            self.assertTrue(trace['stdout_equal'])
+        self.git('config', '--unset', 'diff.renames')
+        for value in ('none', 'all'):
+            self.git('config', 'diff.ignoreSubmodules', value)
+            trace = self.observe_dependency_profile(model, b'Subproject commit ' + root.encode(),
+                                                     'ignore-submodules-' + value + '-observation')
+            self.assertEqual(gitlink in trace['reference_matches'], value == 'none')
+            self.assertIn(gitlink, trace['candidates'])
+            self.assertTrue(trace['containment'])
+            self.assertTrue(trace['stdout_equal'])
+        self.git('config', '--unset', 'diff.ignoreSubmodules')
+
+    def test_dependencies_unknown_missing_invalid_and_observer_inputs(self):
+        self.commit('root', {'content': b'needle'})
+        config = self.repo / '.git' / 'config'
+        original = config.read_bytes()
+        missing = self.repo / '.git' / 'missing-include'
+        malformed = self.repo / '.git' / 'malformed-include'
+        malformed.write_text('[broken\n')
+        unreadable = self.repo / '.git' / 'directory-not-config'
+        unreadable.mkdir()
+        try:
+            self.git('config', 'diff.futurePickaxeBehavior', 'true')
+            observed = self.git('config', '--includes', '--null', '--show-origin', '--show-scope', '--list')
+            self.assertIn(b'diff.futurepickaxebehavior\ntrue\0', observed)
+            self.git('config', '--local', '--add', 'include.path', str(missing))
+            absent = self.run_git('config', '--includes', '--show-origin', '--show-scope', '--list')
+            self.assertEqual(absent.returncode, 0)
+            self.assertFalse(missing.exists())
+            self.assertIn(os.fsencode(missing), absent.stdout)
+            for path in (malformed, unreadable):
+                config.write_bytes(original)
+                self.git('config', '--local', '--add', 'include.path', str(path))
+                failed = self.run_git('config', '--includes', '--show-origin', '--show-scope', '--list')
+                self.assertTrue(failed.returncode != 0 or failed.stderr)
+        finally:
+            config.write_bytes(original)
+        self.traces.append(dict(path='dependency-incomplete-inspection', gate_implemented=False,
+                                classification='proposed-fallback-unknown-or-incomplete-input',
+                                missing_include_git_status=absent.returncode,
+                                conclusion='successfully listing config does not establish complete source inspection'))
+        # GIT_CONFIG can make the observer inspect a file not used by log.
+        diverted = self.repo / '.git' / 'observer-only-config'
+        diverted.write_text('[log]\n date = iso\n')
+        self.git('config', 'log.date', 'short')
+        actual = self.git('--no-pager', 'log', '--all', '-Sneedle', '--')
+        self.env['GIT_CONFIG'] = str(diverted)
+        self.assertEqual(self.git('config', '--get', 'log.date'), b'iso\n')
+        self.assertEqual(self.git('--no-pager', 'log', '--all', '-Sneedle', '--'), actual)
+        self.git('config', '--includes', '--show-origin', '--show-scope', '--list')
+        del self.env['GIT_CONFIG']
+        self.assertEqual(self.git('config', '--get', 'log.date'), b'short\n')
+        self.traces.append(dict(path='dependency-config-observer-trap', gate_implemented=False,
+                                conclusion='observer must distinguish GIT_CONFIG from search configuration overrides'))
+
+    def test_dependencies_config_sources_and_environment_precedence(self):
+        self.commit('root', {'content': b'needle'})
+        probes = self.repo / '.git' / 'config-probes'
+        probes.mkdir()
+        system, global_config, included, conditional, remote_include = (
+            probes / name for name in ('system', 'global', 'included', 'conditional', 'remote-include'))
+        system.write_text('[log]\n date = short\n')
+        included.write_text('[log]\n date = raw\n')
+        conditional.write_text('[log]\n decorate = full\n')
+        remote_include.write_text('[log]\n showSignature = true\n')
+        gitdir = self.git('rev-parse', '--absolute-git-dir').strip().decode()
+        global_config.write_text(
+            '[log]\n date = iso\n[include]\n path = ' + str(included) + '\n'
+            '[includeIf "gitdir:' + gitdir + '"]\n path = '
+            + str(conditional) + '\n'
+            '[includeIf "hasconfig:remote.*.url:https://fixture.invalid/**"]\n path = '
+            + str(remote_include) + '\n')
+        del self.env['GIT_CONFIG_NOSYSTEM']
+        self.env.update(GIT_CONFIG_SYSTEM=str(system), GIT_CONFIG_GLOBAL=str(global_config))
+        self.assertEqual(self.git('config', '--get', 'log.date'), b'raw\n')
+        self.git('config', '--local', 'log.date', 'iso-strict')
+        self.assertEqual(self.git('config', '--get', 'log.date'), b'iso-strict\n')
+        self.git('config', '--local', 'extensions.worktreeConfig', 'true')
+        self.git('config', '--worktree', 'log.date', 'unix')
+        self.assertEqual(self.git('config', '--get', 'log.date'), b'unix\n')
+        self.env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='log.date',
+                        GIT_CONFIG_VALUE_0='relative')
+        self.assertEqual(self.git('config', '--get', 'log.date'), b'relative\n')
+        self.assertEqual(self.commands[-1]['environment']['GIT_CONFIG_VALUE_0'], 'relative')
+        self.assertEqual(self.git('-c', 'log.date=short', 'config', '--get', 'log.date'), b'short\n')
+        observed = self.git('config', '--includes', '--null', '--show-origin', '--show-scope', '--list')
+        for scope in (b'system', b'global', b'local', b'worktree', b'command'):
+            self.assertIn(scope + b'\0', observed)
+        for path in (included, conditional):
+            self.assertIn(b'file:' + os.fsencode(path) + b'\0', observed)
+        self.assertNotIn(b'file:' + os.fsencode(remote_include) + b'\0', observed)
+        self.git('config', '--local', 'remote.origin.url', 'https://fixture.invalid/repo')
+        changed = self.git('config', '--includes', '--null', '--show-origin', '--show-scope', '--list')
+        self.assertIn(b'file:' + os.fsencode(remote_include) + b'\0', changed)
+        self.traces.append(dict(path='dependency-config-origins', classification='observation-only',
+                                conclusion='origins/scopes/includes and per-call environment matter; no gate implemented',
+                                remote_url_include_changed=observed != changed))
 
     def test_replay_prunes_and_preserves_one_formatting_session(self):
         root = self.commit('root', {'content': b'needle'})
