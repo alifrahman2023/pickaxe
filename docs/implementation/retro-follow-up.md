@@ -62,3 +62,28 @@ probes failed before configuration and preserved the previous `latest` archive.
 Independent Standards and Spec reviews against `21e22ad...f00a110` both pass with
 zero findings; each reran the 13 tests and verified current-source evidence.
 Only this review/handoff note changed after review.
+
+## Publication-session retrospective follow-up
+
+After #22, the owner approved an existing-approvals checklist and live check
+output. Historical-validator compatibility and a ticket-startup helper were
+declined. The source-retrieval suggestion concerned reading GitHub requirements
+and API documentation; it did not concern cloning benchmark repositories. No
+source-fetch helper or #23 workload preparation was added.
+
+- Added the approval checklist to [development.md](../development.md#existing-approvals),
+  covering conversation approvals/boundaries, specification Testing Decisions,
+  canonical resolutions/map Notes and repository guidance. The existing local
+  untracked AGENTS.md now points to it; it stays outside the PR.
+- Changed the shared runner to tee command stdout/stderr bytes to the console
+  and attempt log as they arrive, including fragments without a newline. The
+  command's status and partial failure logs are retained.
+- Added a subprocess regression check: a child emits non-UTF-8 stdout and NUL
+  stderr bytes, waits for input, then exits 7. Console and log must contain the
+  prefix while the child is still waiting; the final log must preserve exact
+  bytes and status. It failed with the buffered runner and passed after streaming.
+
+This continues draft PR #52 from `43265f18f6a2575749276b93098ef565ccaf9ef4`.
+#22 remains open, the PR stays draft, and #23 remains unstarted. The earlier
+#22 archive describes its original tested sources; a fresh shared run records
+the changed tooling without rewriting that historical archive.

@@ -13,6 +13,8 @@ The command uses its own `build/checks` tree; pass `--build-dir <path>` to chang
 it. It self-tests evidence validation, configures a Release build, compiles, runs CTest, and retains every attempt
 under that build tree's `evidence/run-*` directory. A failed run returns nonzero
 and retains its logs. `latest.json.gz` changes only after a successful run.
+Command stdout and stderr stream to the console and the attempt's log as bytes
+arrive, including output without a newline. Failed commands retain partial logs.
 
 The three registered fixture suites have evidence records for every declared test.
 The collector derives expected names from their source, rejects missing/duplicate
@@ -78,3 +80,17 @@ sandbox denies network access, use the environment's supported escalation for
 the network command; repeating the same denied request does not add evidence.
 Canonical GitHub decisions remain authoritative; local captures need their source
 identities and freshness recorded before reuse.
+
+## Existing approvals
+
+Before asking the owner for a decision, clarification or permission, check:
+
+- The current conversation's approvals, preferences and stopping boundaries.
+- The linked specification's approved interfaces and Testing Decisions.
+- The ticket's canonical resolution comments and the map's Notes and decisions.
+- Applicable repository guidance for the operation.
+
+Apply an existing approval when it covers the proposed action within the current
+scope. Ask only about a remaining gap or conflict. If a rule requires the
+question, name its source and explain the unresolved point. Approval for a test
+seam does not authorize a later ticket or change a merge/closure boundary.

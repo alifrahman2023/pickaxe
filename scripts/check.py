@@ -109,11 +109,22 @@ def verify(bundle, current_sources=False):
 
 def execute(command, log):
     print('+ ' + ' '.join(str(arg) for arg in command), flush=True)
-    result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    log.write_bytes(result.stdout)
-    sys.stdout.buffer.write(result.stdout)
-    sys.stdout.flush()
-    return result.returncode
+    with log.open('wb') as output, subprocess.Popen(
+            command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
+        try:
+            while True:
+                chunk = process.stdout.read1(65536)
+                if not chunk:
+                    break
+                output.write(chunk)
+                output.flush()
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            return process.wait()
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
 
 
 def run(build):

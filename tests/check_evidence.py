@@ -1,6 +1,13 @@
 """Evidence validator contract: incomplete or inconsistent runs cannot pass."""
 import importlib.util
+import os
 from pathlib import Path
+import selectors
+import signal
+import subprocess
+import sys
+import tempfile
+import time
 import unittest
 
 SPEC = importlib.util.spec_from_file_location('check', Path(__file__).resolve().parents[1] / 'scripts/check.py')
@@ -118,6 +125,48 @@ class EvidenceValidation(unittest.TestCase):
         self.bundle['ctest_log'] = 'Ran 1 test in 0.1s\nOK (skipped=1)'
         with self.assertRaisesRegex(ValueError, 'skips'):
             CHECK.verify(self.bundle)
+
+
+class CommandStreaming(unittest.TestCase):
+    def test_live_output_and_log_before_exit_preserve_bytes_and_failure_status(self):
+        with tempfile.TemporaryDirectory(prefix='pickaxe-command-stream-') as temp:
+            log = Path(temp) / 'command.log'
+            child = ('import os, sys; os.write(1, b"\\xffprogress"); '
+                     'os.write(2, b"\\x00diagnostic"); sys.stdin.buffer.read(1); '
+                     'os.write(1, b"\\ncomplete\\n"); sys.exit(7)')
+            runner = ('import pathlib, runpy, sys; '
+                      'check = runpy.run_path(sys.argv[1]); '
+                      'sys.exit(check["execute"]([sys.executable, "-u", "-c", sys.argv[3]], '
+                      'pathlib.Path(sys.argv[2])))')
+            process = subprocess.Popen([sys.executable, '-u', '-c', runner,
+                                        str(CHECK.ROOT / 'scripts/check.py'), str(log), child],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+            prefix = b'\xffprogress\x00diagnostic'
+            observed = b''
+            try:
+                deadline = time.monotonic() + 5
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    while prefix not in observed:
+                        remaining = deadline - time.monotonic()
+                        self.assertGreater(remaining, 0, 'output buffered until child exit')
+                        self.assertTrue(selector.select(remaining), 'output buffered until child exit')
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        self.assertTrue(chunk, 'runner exited before live output')
+                        observed += chunk
+                self.assertIsNone(process.poll(), 'child must still be waiting for input')
+                self.assertEqual(log.read_bytes(), prefix)
+            finally:
+                try:
+                    tail, _ = process.communicate(input=b'\n', timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate(timeout=5)
+                    raise
+            self.assertEqual(process.returncode, 7)
+            self.assertTrue((observed + tail).endswith(prefix + b'\ncomplete\n'))
+            self.assertEqual(log.read_bytes(), prefix + b'\ncomplete\n')
 
 
 if __name__ == '__main__':
