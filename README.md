@@ -233,3 +233,13 @@ python3 tests/candidate_containment.py \
 For the shared macOS CI/local build-and-check command, validated evidence
 collection, and reliable GitHub CLI operations, see
 [development checks](docs/development.md).
+
+The development-only [benchmark workload preparation](docs/implementation/ticket-23.md)
+retains fixed Git/Linux source histories and exact needle manifests. Large-history
+preparation and measurements are separate from normal builds and tests. Previously
+characterized snapshots can be validated through object-file hashes without
+walking their histories again. Run the tiny tooling checks with:
+
+```sh
+python3 tests/check_evidence.py BenchmarkWorkloads -v
+```
