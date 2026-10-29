@@ -7,6 +7,7 @@ import filecmp
 import hashlib
 import heapq
 import json
+import math
 import os
 import re
 import signal
@@ -46,10 +47,12 @@ def git(repo, *args, **kwargs):
                           check=True, stdout=subprocess.PIPE, **kwargs).stdout
 
 
-def digest(path):
+def digest(path, check_cancelled=None):
     result = hashlib.sha256()
     with Path(path).open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            if check_cancelled is not None:
+                check_cancelled()
             result.update(chunk)
     return result.hexdigest()
 
@@ -266,9 +269,13 @@ class CaptureProcesses:
         with self.lock:
             if self.cancelled:
                 raise InterruptedError('capture batch cancelled')
-            process = subprocess.Popen(*args, **kwargs)
+            process = subprocess.Popen(*args, start_new_session=True, **kwargs)
             self.active.add(process)
             return process
+
+    def check_cancelled(self):
+        if self.cancelled:
+            raise InterruptedError("capture cancelled; raw streams retained")
 
     def finished(self, process):
         with self.lock:
@@ -279,17 +286,26 @@ class CaptureProcesses:
             self.cancelled = True
             for process in self.active:
                 try:
-                    process.terminate()
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
 
 
-def capture_record(output, status):
+def capture_record(output, status, processes=None):
     path = output.with_suffix('.stdout')
+    check = processes.check_cancelled if processes is not None else None
+    matches = 0
     with path.open('rb') as stream:
-        matches = sum(bool(re.fullmatch(rb'commit [0-9a-f]{40}\n', line)) for line in stream)
+        for line in stream:
+            if check is not None:
+                check()
+            matches += bool(re.fullmatch(rb'commit [0-9a-f]{40}\n', line))
     return dict(status=status, stdout_bytes=path.stat().st_size,
-                stdout_sha256=digest(path), stderr_sha256=digest(output.with_suffix('.stderr')),
+                stdout_sha256=digest(path, check), stderr_sha256=digest(output.with_suffix('.stderr'), check),
                 matches=matches)
 
 
@@ -306,7 +322,9 @@ def reference(repo, needle, output, processes=None):
             raise
         finally:
             processes.finished(process)
-    return capture_record(output, status)
+    if processes.cancelled:
+        raise InterruptedError("capture cancelled; raw streams retained")
+    return capture_record(output, status, processes)
 
 
 def capture_batch(repo, candidates, destination, jobs, completed, suffix=''):
@@ -340,7 +358,8 @@ def validate_match_role(record):
         raise ValueError('zero-match candidate selected commits; replace and retain this attempt')
 
 
-def freeze(repo, candidates_path, destination, shape_manifest=None, jobs=1, resume=False):
+def freeze(repo, candidates_path, destination, shape_manifest=None, jobs=1, resume=False,
+           preflight=False, budget=None):
     if jobs < 1:
         raise ValueError('jobs must be positive')
     if resume and shape_manifest is not None:
@@ -369,6 +388,8 @@ def freeze(repo, candidates_path, destination, shape_manifest=None, jobs=1, resu
                 (role == 'newline' and b'\n' not in needle) or
                 (role == 'unicode' and not any(ord(ch) > 127 for ch in needle.decode('utf-8')))):
             raise ValueError('needle does not meet its declared role: ' + c['id'])
+    if not preflight and budget is None:
+        raise ValueError('execution requires an approved --budget-seconds; use --preflight first')
     previous = None
     if resume:
         if (destination / 'manifest.json').exists():
@@ -377,14 +398,18 @@ def freeze(repo, candidates_path, destination, shape_manifest=None, jobs=1, resu
         previous = json.loads(previous_raw)
         shape = validate_shape(repo, previous['shape'])
     else:
+        if shape_manifest is None:
+            raise ValueError('freeze requires --shape-manifest; characterize separately')
         shape = inspect(repo, shape_manifest)
-        destination.mkdir()  # Never overwrite previously frozen evidence.
+        if destination.exists():
+            raise ValueError("destination already exists")
     manifest = dict(schema=1, qualification=False, shape=shape, needles=[],
                     git_path=GIT, git_sha256=digest(GIT),
                     git_build=git(repo, 'version', '--build-options').decode(),
                     environment=selected_environment(),
                     source_sha256=digest(__file__), candidates_sha256=digest(candidates_path),
-                    jobs=jobs, method='untimed reference preparation', reproduced=[])
+                    jobs=jobs, approved_budget_seconds=budget,
+                    method='untimed reference preparation', reproduced=[])
     originals, reproduced = {}, set()
     if previous is not None:
         for key in ['schema', 'git_path', 'git_sha256', 'git_build', 'environment', 'candidates_sha256']:
@@ -408,6 +433,13 @@ def freeze(repo, candidates_path, destination, shape_manifest=None, jobs=1, resu
             output = destination / (name + '-reproduced')
             compare_record(originals[name], capture_record(output, 0), destination / name, output)
             reproduced.add(name)
+
+    if preflight:
+        print_plan(repo, candidates, destination, originals, reproduced, jobs)
+        return
+    if previous is None:
+        destination.mkdir()  # Never overwrite previously frozen evidence.
+    else:
         backup = Path(tempfile.mkdtemp(prefix='resume-', dir=destination))
         (backup / 'manifest.partial.json').write_bytes(previous_raw)
         for candidate in candidates:
@@ -469,7 +501,34 @@ def freeze(repo, candidates_path, destination, shape_manifest=None, jobs=1, resu
     print('frozen and reproduced', destination, flush=True)
 
 
-def reproduce(repo, frozen, destination):
+def print_plan(repo, candidates, destination, originals, reproduced, jobs, reproduction_only=False, observation_directory=None):
+    commands = []
+    observed = []
+    for name in originals:
+        stream = ((observation_directory or destination) / name).with_suffix('.stdout')
+        stat = stream.stat()
+        observed.append(dict(id=name, stdout_bytes=stat.st_size,
+            approximate_write_interval_seconds=max(0, stat.st_mtime - getattr(stat, 'st_birthtime', stat.st_mtime))))
+    phases = [('', {})] if reproduction_only else [('', originals), ('-reproduced', reproduced)]
+    for suffix, completed in phases:
+        for candidate in candidates:
+            name = candidate['id']
+            if name in completed:
+                continue
+            commands.append(dict(cwd=str(repo), needle_hex=candidate['hex'],
+                argv=[GIT, '--no-pager', 'log', '--all',
+                      '-S' + os.fsdecode(bytes.fromhex(candidate['hex'])), '--'],
+                stdout=str((destination / (name + suffix)).with_suffix('.stdout')),
+                stderr=str((destination / (name + suffix)).with_suffix('.stderr'))))
+    print(json.dumps(dict(commands=commands, jobs=jobs, observed=observed,
+        cache='identity validated; no graph enumeration',
+        output_policy='full raw streams; checkpoint completed queries; archive interrupted files on resume',
+        cost_note='Write intervals are retrospective observations, not latency samples or estimates. Remaining query costs are unknown.'), indent=2), flush=True)
+
+
+def reproduce(repo, frozen, destination, preflight=False, budget=None):
+    if not preflight and budget is None:
+        raise ValueError('execution requires an approved --budget-seconds; use --preflight first')
     manifest_path = frozen / 'manifest.json'
     manifest = json.loads(manifest_path.read_text())
     source_hash, manifest_hash = digest(__file__), digest(manifest_path)
@@ -479,11 +538,20 @@ def reproduce(repo, frozen, destination):
     shape = validate_shape(repo, manifest['shape'])
     if manifest['git_path'] != GIT or manifest['git_sha256'] != digest(GIT):
         raise ValueError('Git differs from frozen executable')
-    destination.mkdir()
-    started = datetime.datetime.now(datetime.timezone.utc).isoformat()
     for candidate in manifest['needles']:
         if not re.fullmatch(r'[a-z0-9-]+', candidate['id']):
             raise ValueError('unsafe needle id')
+        actual = capture_record(frozen / candidate['id'], candidate['status'])
+        if candidate['status'] != 0 or actual != {key: candidate[key] for key in actual}:
+            raise ValueError('reference bytes did not reproduce: retained capture changed')
+    if preflight:
+        print_plan(repo, manifest['needles'], destination,
+                   {c['id']: c for c in manifest['needles']}, set(), 1,
+                   reproduction_only=True, observation_directory=frozen)
+        return
+    destination.mkdir()
+    started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for candidate in manifest['needles']:
         print('reproduce', repo, candidate['id'], flush=True)
         result = reference(repo, bytes.fromhex(candidate['hex']), destination / candidate['id'])
         compare_record(candidate, result, frozen / candidate['id'], destination / candidate['id'])
@@ -501,11 +569,14 @@ def reproduce(repo, frozen, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    p = commands.add_parser('inspect')
+    p = commands.add_parser('inspect', aliases=['validate'])
     p.add_argument('--repo', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--shape-manifest', type=Path,
                    help='reuse prior characterization after checking all object-file hashes and repository inputs')
+    p = commands.add_parser('characterize', help='explicit full history enumeration')
+    p.add_argument('--repo', type=Path, required=True)
+    p.add_argument('--output', type=Path, required=True)
     p = commands.add_parser('prepare')
     p.add_argument('--root', type=Path, required=True)
     p.add_argument('--name', choices=PINS, required=True)
@@ -521,15 +592,42 @@ def main():
     p.add_argument('--repo', type=Path, required=True)
     p.add_argument('--frozen', type=Path, required=True)
     p.add_argument('--output-dir', type=Path, required=True)
+    for name in ('characterize', 'prepare', 'freeze', 'reproduce'):
+        commands.choices[name].add_argument('--budget-seconds', type=float,
+            help='approved wall-clock execution limit, including validation and final checks')
+    for name in ('freeze', 'reproduce'):
+        commands.choices[name].add_argument('--preflight', action='store_true',
+            help='validate inputs and print remaining commands without running queries or writing files')
     args = parser.parse_args()
-    if args.command == 'inspect':
+    budget = getattr(args, 'budget_seconds', None)
+    if budget is not None:
+        if not math.isfinite(budget) or budget <= 0:
+            raise ValueError('budget must be finite and positive')
+        signal.signal(signal.SIGALRM, exhausted_budget)
+        signal.setitimer(signal.ITIMER_REAL, budget)
+    if args.command in ('prepare', 'characterize') and budget is None:
+        raise ValueError('full history execution requires an approved --budget-seconds')
+    if args.command in ('inspect', 'validate'):
+        if args.shape_manifest is None:
+            raise ValueError('validation requires --shape-manifest; use characterize for a full history walk')
         save(args.output, inspect(args.repo, args.shape_manifest))
+    elif args.command == 'characterize':
+        save(args.output, inspect(args.repo))
     elif args.command == 'prepare':
         prepare(args.root, args.name)
     elif args.command == 'freeze':
-        freeze(args.repo.resolve(), args.candidates, args.output_dir, args.shape_manifest, args.jobs, args.resume)
+        freeze(args.repo.resolve(), args.candidates, args.output_dir, args.shape_manifest,
+               args.jobs, args.resume, args.preflight, budget)
     else:
-        reproduce(args.repo.resolve(), args.frozen, args.output_dir)
+        reproduce(args.repo.resolve(), args.frozen, args.output_dir, args.preflight, budget)
+
+
+class RuntimeBudgetExpired(RuntimeError):
+    pass
+
+
+def exhausted_budget(signum, frame):
+    raise RuntimeBudgetExpired("runtime budget exhausted; completion pending; partial evidence retained")
 
 
 def terminate_preparation(signum, frame):
@@ -541,7 +639,8 @@ if __name__ == '__main__':
     try:
         try:
             main()
-        except (ValueError, subprocess.CalledProcessError, InterruptedError) as error:
+        except (OSError, ValueError, subprocess.CalledProcessError, RuntimeBudgetExpired) as error:
             sys.exit(str(error))
     finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGTERM, previous_sigterm)

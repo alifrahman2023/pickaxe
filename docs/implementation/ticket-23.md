@@ -15,6 +15,10 @@ claimed before implementation. #24 remains blocked by #23.
 
 ## Preparation and reproduction
 
+The commands below record the original preparation. Current execution requires
+the [cost preflight and approved budget](../development.md#benchmark-execution-cost-controls-23);
+reuse the retained histories rather than repeating acquisition or preparation.
+
 The PATH-selected Git fetches complete ancestors of each pinned B commit into a
 bare acquisition repository. There is no depth/filter argument. Preparation runs
 `git fsck --full --no-reflogs` over the acquired object database, then creates two
@@ -294,3 +298,47 @@ finding. The final orchestration revision passed the full shared Release build:
 **42 suite checks and 22 tool/validator tests**, no skips. Its source-pinned
 archive supersedes the earlier checkpoint archive at the same path; historical
 versions remain in Git and local attempt directories. #24 remains unstarted.
+
+
+## Execution controls and pending budget
+
+The follow-up control slice separates cached `validate`/`inspect` from explicit
+`characterize`. Validation refuses missing or changed dependencies without a
+history walk. Fresh freeze uses a shape manifest; resumed freeze verifies the
+checkpoint shape. Expensive execution requires positive, finite
+`--budget-seconds`. Freeze/reproduction preflight lists the actual remaining
+commands, exact needle bytes, output policy and observed capture sizes/write
+intervals without launching readers or modifying retained evidence.
+
+Budget exhaustion cancels queued captures, terminates owned reader process
+groups (with a forced-stop fallback), and stops worker-side output scanning and
+hashing cooperatively. Successful checkpoints and interrupted files remain;
+completion stays pending. The check runner pins sources before self-tests and
+rejects source additions, removals or body changes before configuration and at
+completion. A disposable subprocess regression changes a source body while the
+test inventory remains fixed.
+
+The mounted retained Linux B preflight reported **23 commands: 11 originals and
+12 reproductions**, with two readers requested. Its one completed original is
+`common-return`: 290,880,503 stdout bytes and approximately 954.254 seconds from
+file creation to last write. This is an observed diagnostic interval, not a
+latency sample or a forecast. The generated plan is retained locally at
+`build/tickets-23-24/context/linux-preflight.json`. Preflight ran without any
+history searches; the partial corpus checkpoint and raw streams were preserved.
+
+Independent Standards and Spec review found preflight counting/retained-stream
+validation gaps and cancellation during worker hashing; all were corrected and
+re-reviewed with no residual findings. Tiny fixtures cover new/resumed preflight,
+missing-budget refusal, exact reproduction plans and altered-stream refusal,
+budget expiry with two readers ignoring SIGTERM, and the source-body regression.
+
+No numeric runtime or agent-usage budget has been approved. The full-corpus job
+remains stopped, #23 incomplete, #24 unstarted, and PR #53 draft. The existing
+`ticket-23.json.gz` workload archive still has `complete=false`.
+
+The final control revision passed `python3 scripts/check.py run`: **42 suite
+checks and 25 tool/validator tests**, no skips. Updated source-pinned evidence is
+retained at `docs/implementation/evidence/ticket-23-checks.json.gz`; this is
+fixture evidence only and does not complete the workload archive. The seven
+original local guidance hashes still match the handoff capture, and the
+untracked retrospective is preserved.

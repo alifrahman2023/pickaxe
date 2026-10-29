@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import shutil
 import signal
 import subprocess
 import sys
@@ -130,6 +131,29 @@ class EvidenceValidation(unittest.TestCase):
 
 
 class CommandStreaming(unittest.TestCase):
+    def test_source_body_changed_during_self_tests_is_rejected_before_configure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            (root / 'tests').mkdir()
+            shutil.copyfile(CHECK.ROOT / 'scripts/check.py', root / 'scripts/check.py')
+            (root / 'CMakeLists.txt').write_text('# fixture\n')
+            (root / 'src').mkdir()
+            (root / 'src/main.cpp').write_text('// before\n')
+            (root / 'tests/check_evidence.py').write_text(
+                'from pathlib import Path\nimport unittest\n'
+                'class Fixture(unittest.TestCase):\n'
+                ' def test_body(self):\n'
+                '  p = Path(__file__).resolve().parents[1] / "src/main.cpp"\n'
+                '  p.write_text("// changed\\n")\n'
+                'if __name__ == "__main__": unittest.main()\n')
+            result = subprocess.run([sys.executable, str(root / 'scripts/check.py'), 'run'],
+                                    capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'changed source: src/main.cpp', result.stderr)
+            self.assertNotIn(b'+ cmake', result.stdout)
+            self.assertFalse((root / 'build/checks/evidence/latest.json.gz').exists())
+
     def test_live_output_and_log_before_exit_preserve_bytes_and_failure_status(self):
         with tempfile.TemporaryDirectory(prefix='pickaxe-command-stream-') as temp:
             log = Path(temp) / 'command.log'
@@ -185,13 +209,25 @@ class BenchmarkWorkloads(unittest.TestCase):
             subprocess.run(['git', 'commit', '-qm', 'fixture'], cwd=repo, env=env, check=True)
         return repo, env
 
+    def test_validation_requires_cached_characterization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, env = self.make_history(root, [b'fixture\n'])
+            output = root / 'shape.json'
+            command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                       'inspect', '--repo', str(repo), '--output', str(output)]
+            result = subprocess.run(command, env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0, 'validation silently characterized history')
+            self.assertIn(b'--shape-manifest', result.stderr)
+            self.assertFalse(output.exists())
+
     def test_inspect_complete_history_and_blob_volume(self):
         with tempfile.TemporaryDirectory() as directory:
             repo, env = self.make_history(Path(directory), [b'first\n', b'second\n'])
             subprocess.run(['git', '-C', str(repo), 'repack', '-ad'], env=env, check=True)
             output = Path(directory) / 'shape.json'
             result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
-                                     'inspect', '--repo', str(repo), '--output', str(output)],
+                                     'characterize', '--budget-seconds', '20', '--repo', str(repo), '--output', str(output)],
                                     capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             shape = json.loads(output.read_text())
@@ -200,7 +236,7 @@ class BenchmarkWorkloads(unittest.TestCase):
             self.assertEqual(shape['attributes']['repository']['state'], 'absent')
             (repo / '.git/info/attributes').write_bytes(b'file -diff\n')
             subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
-                            'inspect', '--repo', str(repo), '--output', str(output)], check=True)
+                            'characterize', '--budget-seconds', '20', '--repo', str(repo), '--output', str(output)], check=True)
             changed = json.loads(output.read_text())
             self.assertEqual(changed['attributes']['repository']['state'], 'present')
             self.assertNotEqual(changed['attributes'], shape['attributes'])
@@ -215,7 +251,7 @@ class BenchmarkWorkloads(unittest.TestCase):
             wrapper.chmod(0o755)
             fast_env = dict(env, PATH=str(wrapper_dir) + os.pathsep + os.environ['PATH'])
             validated = Path(directory) / 'validated.json'
-            command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'), 'inspect',
+            command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'), 'validate',
                        '--repo', str(repo), '--shape-manifest', str(output), '--output', str(validated)]
             result = subprocess.run(command, env=fast_env, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -242,7 +278,7 @@ class BenchmarkWorkloads(unittest.TestCase):
                 index.write_bytes(original_index)
             subprocess.run(['git', '-C', str(repo), 'branch', 'extra'], check=True)
             result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
-                                     'inspect', '--repo', str(repo), '--output', str(output)],
+                                     'characterize', '--budget-seconds', '20', '--repo', str(repo), '--output', str(output)],
                                     capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b'exactly refs/heads/benchmark', result.stderr)
@@ -279,11 +315,27 @@ class BenchmarkWorkloads(unittest.TestCase):
                                'os.execv(' + repr(real_git) + ', [' + repr(real_git) + ', *sys.argv[1:]])\n')
             wrapper.chmod(0o755)
             env['PATH'] = str(wrapper_dir) + os.pathsep + os.environ['PATH']
+            shape = root / 'shape.json'
+            subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                            'characterize', '--budget-seconds', '20', '--repo', str(repo), '--output', str(shape)], check=True, env=env)
             output = root / 'output'
             freeze_command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
                               'freeze', '--repo', str(repo), '--candidates', str(candidates),
                               '--output-dir', str(output), '--jobs', '2']
-            result = subprocess.run(freeze_command, env=env, capture_output=True)
+            preflight = subprocess.run(freeze_command + ['--shape-manifest', str(shape), '--preflight'],
+                                       env=env, capture_output=True)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            plan = json.loads(preflight.stdout)
+            self.assertEqual(len(plan['commands']), 24)
+            self.assertFalse(output.exists())
+            self.assertFalse(calls.exists(), 'preflight launched a query')
+            refused = subprocess.run(freeze_command + ['--shape-manifest', str(shape)],
+                                     env=env, capture_output=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn(b'--budget-seconds', refused.stderr)
+            self.assertFalse(output.exists())
+            freeze_command += ['--budget-seconds', '20']
+            result = subprocess.run(freeze_command + ['--shape-manifest', str(shape)], env=env, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             needles = json.loads((output / 'manifest.json').read_text())['needles']
             self.assertEqual([n['matches'] for n in needles], [2, 2, 1, 1, 0, 0, 2, 2, 0, 1, 0, 2])
@@ -294,6 +346,15 @@ class BenchmarkWorkloads(unittest.TestCase):
             (output / 'manifest.json').unlink()
             (output / 'q0.stdout').write_bytes(b'interrupted capture\n')
             skip_completed.touch()
+            retained = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+            before_calls = calls.read_bytes()
+            preflight = subprocess.run(freeze_command + ['--resume', '--preflight'], env=env, capture_output=True)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            plan = json.loads(preflight.stdout)
+            self.assertEqual(len(plan['commands']), 2)
+            self.assertEqual(len(plan['observed']), 11)
+            self.assertEqual({p: p.read_bytes() for p in output.iterdir() if p.is_file()}, retained)
+            self.assertEqual(calls.read_bytes(), before_calls)
             result = subprocess.run(freeze_command + ['--resume'], env=env, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             resumed = json.loads((output / 'manifest.json').read_text())
@@ -305,7 +366,8 @@ class BenchmarkWorkloads(unittest.TestCase):
             self.assertEqual((output / 'q11.stdout').read_bytes(), reference)
             reproduced = root / 'reproduced'
             command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'), 'reproduce',
-                       '--repo', str(repo), '--frozen', str(output), '--output-dir', str(reproduced)]
+                       '--repo', str(repo), '--frozen', str(output), '--output-dir', str(reproduced),
+                       '--budget-seconds', '20']
             skip_completed.unlink()
             unsuitable = root / 'unsuitable.json'
             invalid_needles = json.loads(candidates.read_text())
@@ -314,34 +376,52 @@ class BenchmarkWorkloads(unittest.TestCase):
             invalid_freeze = list(freeze_command)
             invalid_freeze[invalid_freeze.index('--candidates') + 1] = str(unsuitable)
             invalid_freeze[invalid_freeze.index('--output-dir') + 1] = str(root / 'unsuitable')
-            result = subprocess.run(invalid_freeze, env=env, capture_output=True)
+            result = subprocess.run(invalid_freeze + ['--shape-manifest', str(shape)], env=env, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             result = subprocess.run(invalid_freeze + ['--resume'], env=env, capture_output=True)
             self.assertNotEqual(result.returncode, 0, 'resume accepted a matching zero-match candidate')
             self.assertFalse((root / 'unsuitable/manifest.json').exists())
+            plan_command = command[:-2] + ['--preflight']
+            plan_result = subprocess.run(plan_command, env=env, capture_output=True)
+            self.assertEqual(plan_result.returncode, 0, plan_result.stderr)
+            self.assertEqual(len(json.loads(plan_result.stdout)['commands']), 12)
+            self.assertEqual(len(json.loads(plan_result.stdout)['observed']), 12)
+            self.assertFalse(reproduced.exists())
             result = subprocess.run(command, env=env, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads((reproduced / 'verified.json').read_text())['byte_comparisons'], 24)
             (output / 'q0.stdout').write_bytes(b'changed retained output\n')
-            command[-1] = str(root / 'tampered')
+            command[command.index('--output-dir') + 1] = str(root / 'tampered')
             result = subprocess.run(command, env=env, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b'reference bytes did not reproduce', result.stderr)
             self.assertFalse((root / 'tampered/verified.json').exists())
+            result = subprocess.run(command[:-2] + ['--preflight'], env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0, 'preflight accepted changed retained output')
+
+    def test_budget_stops_parallel_git_readers(self):
+        self.check_stopped_readers(budget=True)
 
     def test_parent_sigterm_stops_parallel_git_readers(self):
+        self.check_stopped_readers(budget=False)
+
+    def check_stopped_readers(self, budget):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo, env = self.make_history(root, [b'fixture\n'])
             bin_dir = root / 'bin'
             bin_dir.mkdir()
             real_git = subprocess.check_output(['which', 'git'], text=True).strip()
+            shape = root / 'shape.json'
+            subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                            'characterize', '--budget-seconds', '20', '--repo', str(repo), '--output', str(shape)], check=True, env=env)
             ready = root / 'readers'
             wrapper = bin_dir / 'git'
-            wrapper.write_text('#!' + sys.executable + '\nimport os, sys\n'
+            wrapper.write_text('#!' + sys.executable + '\nimport os, sys, signal\n'
                                'if sys.argv[1:4] == ["--no-pager", "log", "--all"]:\n'
                                ' fd = os.open(' + repr(str(ready)) + ', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)\n'
-                               ' os.write(fd, (str(os.getpid()) + "\\n").encode()); os.close(fd)\n'
+                               ' os.write(fd, (str(os.getpid()) + "\\n").encode()); os.close(fd)\n' +
+                               (' signal.signal(signal.SIGTERM, signal.SIG_IGN)\n' if budget else '') +
                                ' os.read(0, 1)\n'
                                'os.execv(' + repr(real_git) + ', [' + repr(real_git) + ', *sys.argv[1:]])\n')
             wrapper.chmod(0o755)
@@ -349,7 +429,8 @@ class BenchmarkWorkloads(unittest.TestCase):
             process = subprocess.Popen([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
                                         'freeze', '--repo', str(repo), '--candidates',
                                         str(CHECK.ROOT / 'benchmarks/git-needles.json'),
-                                        '--output-dir', str(root / 'output'), '--jobs', '2'],
+                                        '--output-dir', str(root / 'output'), '--jobs', '2',
+                                        '--shape-manifest', str(shape), '--budget-seconds', '2' if budget else '20'],
                                        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             readers = []
@@ -360,12 +441,17 @@ class BenchmarkWorkloads(unittest.TestCase):
                     if ready.exists():
                         readers = [int(pid) for pid in ready.read_text().splitlines()]
                     time.sleep(0.01)
-                process.terminate()
+                if not budget:
+                    process.terminate()
                 process.wait(timeout=5)
                 self.assertNotEqual(process.returncode, 0)
                 for pid in readers:
                     with self.assertRaises(ProcessLookupError, msg='reader survived parent SIGTERM'):
                         os.kill(pid, 0)
+                if budget:
+                    self.assertIn(b'budget exhausted', process.stdout.read())
+                self.assertTrue((root / 'output/manifest.partial.json').exists())
+                self.assertTrue((root / 'output/common-return.stdout').exists())
                 self.assertFalse((root / 'output/manifest.json').exists())
             finally:
                 try:

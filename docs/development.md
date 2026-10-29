@@ -94,3 +94,43 @@ Apply an existing approval when it covers the proposed action within the current
 scope. Ask only about a remaining gap or conflict. If a rule requires the
 question, name its source and explain the unresolved point. Approval for a test
 seam does not authorize a later ticket or change a merge/closure boundary.
+
+## Benchmark execution cost controls (#23)
+
+The normal check command above uses tiny fixtures. Benchmark `validate` (also
+spelled `inspect`) requires `--shape-manifest`: it checks repository inputs and
+object-file hashes and reuses the recorded graph metrics. Missing, incomplete or
+changed inputs fail; validation never falls back to a history walk. Full walks
+use the explicit `characterize` command. `prepare`, `characterize`, `freeze` and
+`reproduce` require an owner-approved positive `--budget-seconds` for execution.
+This wall-clock limit includes validation and final checks; cancellation has a
+short cleanup allowance to terminate and reap owned readers. The flag records a
+limit; it does not establish that the owner approved that limit.
+
+Before real-corpus freeze or reproduction, run the same command with
+`--preflight` and no budget. This read-only path validates cached inputs and
+retained completed streams, then prints every remaining reference command,
+needle bytes, output paths, reader count and observed write intervals/bytes.
+Write intervals are retrospective diagnostics, not benchmark samples or a
+prediction of remaining costs. Fresh `freeze` requires `--shape-manifest`;
+`freeze --resume` uses the retained checkpoint's shape instead.
+
+Agree the runtime **and agent-usage** budget before execution. Keep long jobs
+out of an active conversational polling loop: retain job logs and inspect once
+at the agreed boundary. On exhaustion, owned readers stop, queued readers are
+cancelled, completed checkpoints and interrupted raw files remain, and completion
+stamps stay absent. Resume archives interrupted streams before retry. The limit
+never truncates history or output to satisfy the workload requirements. A small
+budget may expire during validation before any reader starts.
+
+For #23's pending Linux work, this is the read-only preflight:
+
+```sh
+python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-B --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen --resume --jobs 2 --preflight
+```
+
+Add `--budget-seconds <approved-seconds>` and omit `--preflight` only after the
+budget decision. One completed query took about 16 minutes; 11 original queries
+and 12 reproductions remain, with unknown costs. #24 remains unstarted and PR
+#53 stays draft. Before changing Git configuration or attribute capture, consult
+[the eligibility input inventory](implementation/eligibility-inventory.md).
