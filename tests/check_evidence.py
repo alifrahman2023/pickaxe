@@ -1,5 +1,6 @@
 """Evidence validator contract: incomplete or inconsistent runs cannot pass."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -183,6 +184,7 @@ class BenchmarkWorkloads(unittest.TestCase):
                 (repo / 'file').write_bytes(content)
                 subprocess.run(['git', 'add', 'file'], cwd=repo, env=env, check=True)
                 subprocess.run(['git', 'commit', '-qm', 'fixture'], cwd=repo, env=env, check=True)
+            subprocess.run(['git', '-C', str(repo), 'repack', '-ad'], env=env, check=True)
             output = Path(directory) / 'shape.json'
             result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
                                      'inspect', '--repo', str(repo), '--output', str(output)],
@@ -198,6 +200,42 @@ class BenchmarkWorkloads(unittest.TestCase):
             changed = json.loads(output.read_text())
             self.assertEqual(changed['attributes']['repository']['state'], 'present')
             self.assertNotEqual(changed['attributes'], shape['attributes'])
+            wrapper_dir = Path(directory) / 'bin'
+            wrapper_dir.mkdir()
+            real_git = subprocess.check_output(['which', 'git'], text=True).strip()
+            wrapper = wrapper_dir / 'git'
+            wrapper.write_text('#!' + sys.executable + '\nimport os, sys\n'
+                               'if any(arg in ("rev-list", "cat-file") for arg in sys.argv):\n'
+                               ' sys.exit("full graph scan attempted")\n'
+                               'os.execv(' + repr(real_git) + ', [' + repr(real_git) + ', *sys.argv[1:]])\n')
+            wrapper.chmod(0o755)
+            fast_env = dict(env, PATH=str(wrapper_dir) + os.pathsep + os.environ['PATH'])
+            validated = Path(directory) / 'validated.json'
+            command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'), 'inspect',
+                       '--repo', str(repo), '--shape-manifest', str(output), '--output', str(validated)]
+            result = subprocess.run(command, env=fast_env, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            reused = json.loads(validated.read_text())
+            self.assertEqual({k: v for k, v in reused.items() if k != 'characterization_source'},
+                             {k: v for k, v in changed.items() if k != 'characterization_source'})
+            self.assertEqual(reused['characterization_source']['manifest_sha256'],
+                             hashlib.sha256(output.read_bytes()).hexdigest())
+            incomplete = Path(directory) / 'incomplete.json'
+            for missing in ['head', 'config_hex', 'attributes', 'storage']:
+                incomplete.write_text(json.dumps({k: v for k, v in changed.items() if k != missing}))
+                invalid_command = list(command)
+                invalid_command[invalid_command.index('--shape-manifest') + 1] = str(incomplete)
+                result = subprocess.run(invalid_command, env=fast_env, capture_output=True)
+                self.assertNotEqual(result.returncode, 0, 'incomplete cached shape was accepted: ' + missing)
+            index = next((repo / '.git/objects/pack').glob('*.idx'))
+            original_index = index.read_bytes()
+            index.chmod(0o644)
+            try:
+                index.write_bytes(original_index + b'changed')
+                result = subprocess.run(command, env=fast_env, capture_output=True)
+                self.assertNotEqual(result.returncode, 0, 'changed object storage reused stale metrics')
+            finally:
+                index.write_bytes(original_index)
             subprocess.run(['git', '-C', str(repo), 'branch', 'extra'], check=True)
             result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
                                      'inspect', '--repo', str(repo), '--output', str(output)],

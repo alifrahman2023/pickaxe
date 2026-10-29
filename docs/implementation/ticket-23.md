@@ -32,8 +32,8 @@ git init --bare build/benchmarks/sources/linux.git
 git -C build/benchmarks/sources/linux.git fetch --no-tags https://github.com/torvalds/linux.git adc218676eef25575469234709c2d87185ca223a
 python3 scripts/benchmarks.py prepare --root build/benchmarks --name git
 python3 scripts/benchmarks.py prepare --root build/benchmarks/linux-volume --name linux
-python3 scripts/benchmarks.py freeze --repo build/benchmarks/git-B --candidates benchmarks/git-needles.json --output-dir build/benchmarks/git-frozen
-python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-B --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen
+python3 scripts/benchmarks.py freeze --repo build/benchmarks/git-B --shape-manifest build/benchmarks/git-B.json --candidates benchmarks/git-needles.json --output-dir build/benchmarks/git-frozen
+python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-B --shape-manifest build/benchmarks/linux-volume/linux-B.json --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen
 ```
 
 Linux requires a case-sensitive checkout filesystem: the pinned tree contains
@@ -190,3 +190,54 @@ build passed **42 suite checks and 21 tool/validator tests**, no skips; the seal
 bundle is `docs/implementation/evidence/ticket-23-checks.json.gz` and verifies
 with current sources. Earlier denied/changed-source/timeout attempts remain
 retained rather than counted as passes. Linux completion remains pending.
+
+
+## Validation latency correction
+
+The original tool repeated full `rev-list` / `cat-file` characterization at
+freeze entry/exit and reproduction, despite already completed frozen A/B
+reports. After owner feedback, the redundant Linux scans were stopped; the
+successful full fsck, source acquisition and all four initial full shape reports
+were preserved. No workload, needle role or measurement repetition was reduced.
+
+Full characterization remains an explicit one-time operation per prepared
+snapshot. `inspect --shape-manifest <prior report>` and `freeze --shape-manifest
+<prior report>` instead validate pinned refs/HEAD, clean checkout, config,
+external attributes and SHA-256 hashes of every object-storage file (packs,
+indexes and auxiliary metadata). They reuse the prior graph/blob metrics and
+record that method plus the source report path and SHA-256. They do not claim
+independent recomputation. Reference queries and their byte reproduction still
+execute in full; the subsequent warm-run measurements remain separate.
+
+New cache state schema 1 requires every repository dependency and graph metric
+field. Missing fields and changed indexes are rejected. For the session's older
+fully packed reports only, matching pack bytes and object counts plus exactly
+the expected pack/index files permit promotion; newly hashed indexes establish
+current identity, not their historical identity. Legacy omissions are explicitly
+limited to the fields absent from those older reports. Grafts, shallow history,
+alternates and symlinked object storage are rejected.
+
+A local Git wrapper blocks every `rev-list` / `cat-file` invocation. The original
+repeated-inspection path fails this guard immediately. The new validation path
+passed it on the real Linux B workload in 4.963 seconds initially and 8.783
+seconds with the reviewed schema/provenance checks during a full check run, hashing its retained
+object files without walking history. The regression also demonstrates that
+changed object storage and incomplete reports cannot reuse stale metrics.
+Independent Standards review confirmed the fixes with no outstanding finding;
+Spec review accepted identity-checked reuse and required explicit provenance,
+which is now recorded. Raw diagnostic records are under
+`build/benchmarks/diagnosis/`. The tiny wrapper is diagnostic-only.
+
+Downloading and characterizing the fixed histories is not part of ordinary
+builds or tests. The actual full-history reference searches are deliberately
+repeated by the approved benchmark protocol and can remain expensive. Changes
+to the recorded workload/packing invalidate reuse; validation fails rather than
+silently declaring a different dataset equivalent.
+
+
+After the latency correction, the full shared Release checks passed again:
+**42 suite checks and 21 tool/validator tests**, no skips. The source-pinned
+archive was refreshed to that successful run; earlier versions remain in Git
+history and local attempt directories. The large datasets are absent from the
+ordinary test loop: four tiny workload-tool tests exercise the relevant CLI
+behavior without downloads or Linux history enumeration.

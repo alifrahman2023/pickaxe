@@ -81,13 +81,16 @@ def attribute_inputs(repo, common):
     return result
 
 
-def inspect(repo):
+def repository_state(repo):
     repo = Path(repo).resolve()
     common = Path(os.fsdecode(git(repo, 'rev-parse', '--git-common-dir').strip()))
     if not common.is_absolute():
         common = repo / common
-    if (common / 'shallow').exists() or (common / 'objects/info/alternates').exists():
+    if ((common / 'shallow').exists() or (common / 'objects/info/alternates').exists()
+            or (common / 'objects/info/http-alternates').exists()):
         raise ValueError('workload must have complete independent object storage')
+    if (common / 'info/grafts').exists():
+        raise ValueError('history grafts are forbidden')
     refs = git(repo, 'for-each-ref', '--format=%(refname) %(objectname)').decode().splitlines()
     head = git(repo, 'rev-parse', 'HEAD').decode().strip()
     if refs != ['refs/heads/benchmark ' + head]:
@@ -102,6 +105,62 @@ def inspect(repo):
     config = git(repo, 'config', '--null', '--list', '--show-origin')
     if b'partialclone' in config.lower() or b'promisor' in config.lower():
         raise ValueError('partial repositories are forbidden')
+    objects = common / 'objects'
+    storage = []
+    for path in sorted(objects.rglob('*')):
+        if path.is_symlink():
+            raise ValueError('symlink in workload object storage')
+        if path.is_file():
+            storage.append(dict(path=path.relative_to(objects).as_posix(),
+                                bytes=path.stat().st_size, sha256=digest(path)))
+    packs = [dict(name=Path(record['path']).name, bytes=record['bytes'], sha256=record['sha256'])
+             for record in storage if record['path'].startswith('pack/') and record['path'].endswith('.pack')]
+    return dict(state_schema=1, head=head, refs=refs, symbolic_head='refs/heads/benchmark', worktrees=worktrees,
+                packs=packs, packed_object_bytes=sum(p['bytes'] for p in packs), storage=storage,
+                count_objects=git(repo, 'count-objects', '-v').decode(), config_hex=config.hex(),
+                attributes=attribute_inputs(repo, common),
+                home=os.environ.get('HOME'), xdg_config_home=os.environ.get('XDG_CONFIG_HOME'))
+
+
+def validate_shape(repo, shape):
+    state = repository_state(repo)
+    metrics = {'commits', 'merges', 'root_commits', 'parent_edges', 'max_parents',
+               'reachable_objects', 'reachable_bytes', 'unique_blobs', 'unique_blob_bytes',
+               'largest_blobs', 'total_objects', 'out_of_scope_objects'}
+    if not metrics <= shape.keys():
+        raise ValueError('cached shape has missing characterization fields')
+    legacy = 'storage' not in shape and 'state_schema' not in shape
+    permitted_omissions = {'storage', 'state_schema', 'attributes', 'home', 'xdg_config_home'} if legacy else set()
+    if not (state.keys() - permitted_omissions) <= shape.keys():
+        raise ValueError('cached shape has missing repository inputs')
+    if not legacy and shape['state_schema'] != 1:
+        raise ValueError('unsupported cached repository state schema')
+    if legacy:
+        # Upgrade this session's older, fully packed reports without walking history.
+        # Exact pack bytes bind their object contents; no unrecorded loose/auxiliary
+        # objects are accepted. Subsequent checks also bind indexes and metadata.
+        expected_files = {f"pack/{pack['name']}" for pack in shape['packs']}
+        expected_files |= {str(Path(name).with_suffix('.idx')) for name in expected_files}
+        if ('count: 0\n' not in shape['count_objects'] or
+                {record['path'] for record in state['storage']} != expected_files):
+            raise ValueError('legacy shape requires a full inspection of changed object storage')
+    for key, value in state.items():
+        if key in shape and shape[key] != value:
+            raise ValueError('repository differs from recorded shape: ' + key)
+    return dict(shape, **state)
+
+
+def inspect(repo, shape_manifest=None):
+    if shape_manifest is not None:
+        raw = shape_manifest.read_bytes()
+        saved = json.loads(raw)
+        result = validate_shape(repo, saved.get('shape', saved))
+        result['characterization_source'] = dict(
+            method='reused characterization; graph metrics not recomputed',
+            manifest_path=str(shape_manifest.resolve()), manifest_sha256=hashlib.sha256(raw).hexdigest())
+        return result
+    repo = Path(repo).resolve()
+    state = repository_state(repo)
     commits = merges = roots = parent_edges = max_parents = 0
     with tempfile.TemporaryFile() as traversal:
         subprocess.run([GIT, '-C', str(repo), 'rev-list', '--all', '--parents'],
@@ -139,18 +198,15 @@ def inspect(repo):
                        env=environment(), stdout=inventory, check=True)
         inventory.seek(0)
         total = sum(1 for _ in inventory)
-    packs = [{ 'name': p.name, 'bytes': p.stat().st_size, 'sha256': digest(p)}
-             for p in sorted((common / 'objects/pack').glob('*.pack'))]
-    return dict(head=head, refs=refs, symbolic_head='refs/heads/benchmark', worktrees=worktrees,
-                commits=commits, merges=merges, root_commits=roots, parent_edges=parent_edges,
+    if repository_state(repo) != state:
+        raise ValueError('repository changed during characterization')
+    return dict(commits=commits, merges=merges, root_commits=roots, parent_edges=parent_edges,
                 max_parents=max_parents, reachable_objects=counts, reachable_bytes=sizes,
                 unique_blobs=counts.get('blob', 0), unique_blob_bytes=sizes.get('blob', 0),
                 largest_blobs=[list(item) for item in sorted(largest, reverse=True)], total_objects=total,
-                out_of_scope_objects=total - sum(counts.values()), packs=packs,
-                packed_object_bytes=sum(p['bytes'] for p in packs),
-                count_objects=git(repo, 'count-objects', '-v').decode(), config_hex=config.hex(),
-                attributes=attribute_inputs(repo, common),
-                home=os.environ.get('HOME'), xdg_config_home=os.environ.get('XDG_CONFIG_HOME'))
+                out_of_scope_objects=total - sum(counts.values()),
+                characterization_source=dict(method='full history enumeration', tool_sha256=digest(__file__)),
+                **state)
 
 
 def prepare(root, name):
@@ -206,7 +262,7 @@ def compare_record(expected, actual, original, reproduced):
             raise ValueError('reference bytes did not reproduce: ' + str(original))
 
 
-def freeze(repo, candidates_path, destination):
+def freeze(repo, candidates_path, destination, shape_manifest=None):
     candidates = json.loads(candidates_path.read_text())
     for candidate in candidates:
         needle = bytes.fromhex(candidate['hex'])
@@ -231,7 +287,7 @@ def freeze(repo, candidates_path, destination):
                 (role == 'newline' and b'\n' not in needle) or
                 (role == 'unicode' and not any(ord(ch) > 127 for ch in needle.decode('utf-8')))):
             raise ValueError('needle does not meet its declared role: ' + c['id'])
-    shape = inspect(repo)
+    shape = inspect(repo, shape_manifest)
     destination.mkdir()  # Never overwrite previously frozen evidence.
     manifest = dict(schema=1, qualification=False, shape=shape, needles=[],
                     git_path=GIT, git_sha256=digest(GIT),
@@ -257,8 +313,7 @@ def freeze(repo, candidates_path, destination):
         output = destination / (candidate['id'] + '-reproduced')
         result = reference(repo, bytes.fromhex(candidate['hex']), output)
         compare_record(candidate, result, destination / candidate['id'], output)
-    if inspect(repo) != shape:
-        raise ValueError('repository changed during freeze')
+    validate_shape(repo, shape)
     if digest(__file__) != manifest['source_sha256']:
         raise ValueError('tool source changed during freeze')
     save(destination / 'manifest.json', manifest)
@@ -272,9 +327,7 @@ def reproduce(repo, frozen, destination):
     profile = selected_environment()
     if any(profile.get(key) != value for key, value in manifest['environment'].items()):
         raise ValueError('environment differs from frozen inputs')
-    shape = inspect(repo)
-    if any(shape[key] != value for key, value in manifest['shape'].items()):
-        raise ValueError('repository differs from frozen inputs')
+    shape = validate_shape(repo, manifest['shape'])
     if manifest['git_path'] != GIT or manifest['git_sha256'] != digest(GIT):
         raise ValueError('Git differs from frozen executable')
     destination.mkdir()
@@ -285,8 +338,7 @@ def reproduce(repo, frozen, destination):
         print('reproduce', repo, candidate['id'], flush=True)
         result = reference(repo, bytes.fromhex(candidate['hex']), destination / candidate['id'])
         compare_record(candidate, result, frozen / candidate['id'], destination / candidate['id'])
-    if inspect(repo) != shape:
-        raise ValueError('repository changed during reproduction')
+    validate_shape(repo, shape)
     if digest(__file__) != source_hash or digest(manifest_path) != manifest_hash:
         raise ValueError('tool source or frozen manifest changed during reproduction')
     save(destination / 'verified.json', dict(
@@ -303,6 +355,8 @@ def main():
     p = commands.add_parser('inspect')
     p.add_argument('--repo', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--shape-manifest', type=Path,
+                   help='reuse prior characterization after checking all object-file hashes and repository inputs')
     p = commands.add_parser('prepare')
     p.add_argument('--root', type=Path, required=True)
     p.add_argument('--name', choices=PINS, required=True)
@@ -310,17 +364,19 @@ def main():
     p.add_argument('--repo', type=Path, required=True)
     p.add_argument('--candidates', type=Path, required=True)
     p.add_argument('--output-dir', type=Path, required=True)
+    p.add_argument('--shape-manifest', type=Path,
+                   help='reuse the prepared shape instead of repeating full history characterization')
     p = commands.add_parser('reproduce')
     p.add_argument('--repo', type=Path, required=True)
     p.add_argument('--frozen', type=Path, required=True)
     p.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
     if args.command == 'inspect':
-        save(args.output, inspect(args.repo))
+        save(args.output, inspect(args.repo, args.shape_manifest))
     elif args.command == 'prepare':
         prepare(args.root, args.name)
     elif args.command == 'freeze':
-        freeze(args.repo.resolve(), args.candidates, args.output_dir)
+        freeze(args.repo.resolve(), args.candidates, args.output_dir, args.shape_manifest)
     else:
         reproduce(args.repo.resolve(), args.frozen, args.output_dir)
 
