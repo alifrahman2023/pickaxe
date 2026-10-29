@@ -231,6 +231,17 @@ class BenchmarkWorkloads(unittest.TestCase):
                                                 cwd=repo, env=env)
             self.assertEqual((output / 'q11.stdout').read_bytes(), reference)
 
+    def test_freeze_reserves_reproduction_capture_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidates = root / 'candidates.json'
+            candidates.write_text(json.dumps([dict(id='q0-reproduced', role='rare', hex='61')]))
+            result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                                     'freeze', '--repo', str(root), '--candidates', str(candidates),
+                                     '--output-dir', str(root / 'output')], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'reserved reproduction suffix', result.stderr)
+
     def test_freeze_rejects_empty_and_nul_argument_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

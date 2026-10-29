@@ -31,10 +31,30 @@ git -C build/benchmarks/sources/git.git fetch --no-tags https://github.com/git/g
 git init --bare build/benchmarks/sources/linux.git
 git -C build/benchmarks/sources/linux.git fetch --no-tags https://github.com/torvalds/linux.git adc218676eef25575469234709c2d87185ca223a
 python3 scripts/benchmarks.py prepare --root build/benchmarks --name git
-python3 scripts/benchmarks.py prepare --root build/benchmarks --name linux
+python3 scripts/benchmarks.py prepare --root build/benchmarks/linux-volume --name linux
 python3 scripts/benchmarks.py freeze --repo build/benchmarks/git-B --candidates benchmarks/git-needles.json --output-dir build/benchmarks/git-frozen
-python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-B --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen
+python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-B --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen
 ```
+
+Linux requires a case-sensitive checkout filesystem: the pinned tree contains
+both `include/uapi/linux/netfilter_ipv4/ipt_ECN.h` and `ipt_ecn.h` (also
+`ipt_TTL.h` / `ipt_ttl.h`). The host workspace filesystem fails a distinct-case
+file probe. Before preparing Linux, create and mount a disposable image:
+
+```sh
+hdiutil create -size 80g -type SPARSEBUNDLE -fs 'Case-sensitive APFS' -volname PickaxeBenchmarks -nospotlight build/benchmarks/linux-workloads.sparsebundle
+mkdir -p build/benchmarks/linux-volume
+hdiutil attach build/benchmarks/linux-workloads.sparsebundle -mountpoint "$PWD/build/benchmarks/linux-volume" -nobrowse -owners off
+ln -s "$PWD/build/benchmarks/sources" build/benchmarks/linux-volume/sources
+```
+
+Run this image setup after acquisition starts, before Linux preparation. The
+80 GiB virtual limit is sparse, not an up-front physical allocation. Ordinary
+non-bare repositories and complete case-distinct files remain available for
+later Pickaxe measurements. The image-backed APFS condition must remain explicit
+in those measurements; it is not Linux/ext4 qualification. To reuse later,
+reattach this image at the same mountpoint. Detach only when no benchmark
+process uses it: `hdiutil detach "$PWD/build/benchmarks/linux-volume"`.
 
 Use a new build directory for a new preparation/freeze attempt. The source
 histories are Git and Linux **source workloads on macOS**; no Linux operating
@@ -103,3 +123,22 @@ fixtures (`EPERM`). With normal process access, all 42 suite checks passed; the
 collector correctly rejected source changes during the run. Both failed
 attempts remain under `build/checks/evidence/`. Final sealed checks, all four
 shape records, frozen needle outputs and reviews are still pending.
+
+
+## Preliminary review and filesystem finding
+
+Independent code-review Standards and Spec reviews examined the change from the
+recorded starting commit. Standards found no documented-standard breach and one
+P2 correctness issue: an accepted ID ending in `-reproduced` could overwrite a
+retained original capture. A red→green regression now reserves that suffix.
+Both stream files also receive explicit byte comparison, beyond length/hash
+checks. The follow-up Standards review confirmed the fix and all four workload
+CLI tests passed; no new finding. Preliminary Spec review found zero findings,
+with actual large-workload completion still pending. Final review includes the
+completed evidence and any #24 change.
+
+The current in-flight Git capture started with the original tool source (commit
+`18dc85d93bbfc7cc5c6428c7d1154de8ad310335`); its source hash remains in its
+manifest. Its selected IDs cannot collide. After reproduction completes, every
+original/reproduced stream will also be compared byte-for-byte, and that result
+will be recorded separately. Linux captures use the corrected source.

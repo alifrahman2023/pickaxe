@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Frozen, local source-history workloads. Development tooling, not product indexing."""
 import argparse
+import filecmp
 import hashlib
 import heapq
 import json
@@ -167,6 +168,8 @@ def freeze(repo, candidates_path, destination):
             raise ValueError('needles require nonempty bytes without NUL')
         if not re.fullmatch(r'[a-z0-9-]+', candidate['id']):
             raise ValueError('unsafe needle id')
+        if candidate['id'].endswith('-reproduced'):
+            raise ValueError('needle ID uses reserved reproduction suffix')
     roles = [c['role'] for c in candidates]
     expected = ['common'] * 2 + ['rare'] * 2 + ['zero-match'] * 2 + [
         'single-byte', 'two-byte', 'long', 'spaces', 'unicode', 'newline']
@@ -210,6 +213,10 @@ def freeze(repo, candidates_path, destination):
         result = reference(repo, bytes.fromhex(candidate['hex']), output)
         if result != {k: candidate[k] for k in result}:
             raise ValueError('reference output did not reproduce: ' + candidate['id'])
+        for suffix in ['.stdout', '.stderr']:
+            if not filecmp.cmp((destination / candidate['id']).with_suffix(suffix),
+                               output.with_suffix(suffix), shallow=False):
+                raise ValueError('reference bytes did not reproduce: ' + candidate['id'])
     if inspect(repo) != shape:
         raise ValueError('repository changed during freeze')
     save(destination / 'manifest.json', manifest)
