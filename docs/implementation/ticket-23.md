@@ -180,3 +180,13 @@ of attribute files from their later observed absence.
 ```sh
 python3 scripts/benchmarks.py reproduce --repo build/benchmarks/git-B --frozen build/benchmarks/git-frozen --output-dir build/benchmarks/git-audited-reproduction
 ```
+
+
+The completed Git audited reproduction compared **24 streams** (stdout and
+stderr for twelve queries) byte-for-byte, with unchanged dependency identities
+from 2026-10-29 17:03:05 UTC through 17:07:26 UTC. Git A's original shape also
+reproduced against the corrected inspector. The corrected-source shared Release
+build passed **42 suite checks and 21 tool/validator tests**, no skips; the sealed
+bundle is `docs/implementation/evidence/ticket-23-checks.json.gz` and verifies
+with current sources. Earlier denied/changed-source/timeout attempts remain
+retained rather than counted as passes. Linux completion remains pending.
