@@ -1,6 +1,13 @@
 """Evidence validator contract: incomplete or inconsistent runs cannot pass."""
 import importlib.util
+import os
 from pathlib import Path
+import selectors
+import signal
+import subprocess
+import sys
+import tempfile
+import time
 import unittest
 
 SPEC = importlib.util.spec_from_file_location('check', Path(__file__).resolve().parents[1] / 'scripts/check.py')
@@ -14,13 +21,15 @@ class EvidenceValidation(unittest.TestCase):
             schema=2, ctest_status=0, tool_test_status=0,
             expected_tool_tests=['ToolFixture.test_example'],
             tool_test_log='Ran 1 test in 0.1s\n\nOK\n',
-            junit='<testsuite><testcase name="cli_baseline"/><testcase name="candidate_containment"/></testsuite>',
-            ctest_log='Ran 1 test in 0.1s\nOK\nRan 1 test in 0.1s\nOK\n',
+            junit='<testsuite>' + ''.join(f'<testcase name="{group}"/>' for group in CHECK.SUITES) + '</testsuite>',
+            ctest_log='Ran 1 test in 0.1s\nOK\n' * len(CHECK.SUITES),
             expected_tests={group: ['Fixture.test_example'] for group in CHECK.SUITES},
             sources={path: 'original' for path in [*CHECK.SUITES.values(), 'tests/helpers/controlled_textconv.py',
                                                                  'tests/fixtures/candidate_model.py',
-                                                                 'tests/fixtures/ordered_replay.py']},
+                                                                 'tests/fixtures/ordered_replay.py',
+                                                                 'tests/helpers/publication_probe.cpp']},
             source_root='/historical/checkout', git_sha256='git', pk_sha256='pk',
+            publication_probe_sha256='probe',
             records={
                 'cli_baseline': [dict(test='__main__.Fixture.test_example',
                                       fixture_source_sha256='original', textconv_source_sha256='original',
@@ -28,10 +37,14 @@ class EvidenceValidation(unittest.TestCase):
                 'candidate_containment': [dict(test='__main__.Fixture.test_example', git_sha256='git',
                                               source_sha256={'tests/candidate_containment.py': 'original',
                                                              'tests/fixtures/candidate_model.py': 'original',
-                                                             'tests/fixtures/ordered_replay.py': 'original'})]})
+                                                             'tests/fixtures/ordered_replay.py': 'original'})],
+                'publication_protocol': [dict(test='__main__.Fixture.test_example', git_sha256='git',
+                                             probe_sha256='probe',
+                                             source_sha256={'tests/publication_protocol.py': 'original',
+                                                            'tests/helpers/publication_probe.cpp': 'original'})]})
 
     def test_historical_bundle_does_not_require_current_checkout_hashes(self):
-        self.assertEqual(CHECK.verify(self.bundle), 2)
+        self.assertEqual(CHECK.verify(self.bundle), len(CHECK.SUITES))
         with self.assertRaisesRegex(ValueError, 'changed source'):
             CHECK.verify(self.bundle, current_sources=True)
 
@@ -58,6 +71,21 @@ class EvidenceValidation(unittest.TestCase):
     def test_wrong_source_hash_is_rejected(self):
         self.bundle['sources']['tests/cli_baseline.py'] = 'different'
         with self.assertRaisesRegex(ValueError, 'source hash mismatch'):
+            CHECK.verify(self.bundle)
+
+    def test_missing_publication_cpp_hash_is_rejected(self):
+        del self.bundle['records']['publication_protocol'][0]['source_sha256']['tests/helpers/publication_probe.cpp']
+        with self.assertRaisesRegex(ValueError, 'source metadata incomplete'):
+            CHECK.verify(self.bundle)
+
+    def test_changed_publication_cpp_hash_is_rejected(self):
+        self.bundle['records']['publication_protocol'][0]['source_sha256']['tests/helpers/publication_probe.cpp'] = 'changed'
+        with self.assertRaisesRegex(ValueError, 'source hash mismatch'):
+            CHECK.verify(self.bundle)
+
+    def test_wrong_publication_binary_is_rejected(self):
+        self.bundle['records']['publication_protocol'][0]['probe_sha256'] = 'changed'
+        with self.assertRaisesRegex(ValueError, 'probe binary hash mismatch'):
             CHECK.verify(self.bundle)
 
     def test_failed_run_is_rejected_even_with_complete_records(self):
@@ -97,6 +125,48 @@ class EvidenceValidation(unittest.TestCase):
         self.bundle['ctest_log'] = 'Ran 1 test in 0.1s\nOK (skipped=1)'
         with self.assertRaisesRegex(ValueError, 'skips'):
             CHECK.verify(self.bundle)
+
+
+class CommandStreaming(unittest.TestCase):
+    def test_live_output_and_log_before_exit_preserve_bytes_and_failure_status(self):
+        with tempfile.TemporaryDirectory(prefix='pickaxe-command-stream-') as temp:
+            log = Path(temp) / 'command.log'
+            child = ('import os, sys; os.write(1, b"\\xffprogress"); '
+                     'os.write(2, b"\\x00diagnostic"); sys.stdin.buffer.read(1); '
+                     'os.write(1, b"\\ncomplete\\n"); sys.exit(7)')
+            runner = ('import pathlib, runpy, sys; '
+                      'check = runpy.run_path(sys.argv[1]); '
+                      'sys.exit(check["execute"]([sys.executable, "-u", "-c", sys.argv[3]], '
+                      'pathlib.Path(sys.argv[2])))')
+            process = subprocess.Popen([sys.executable, '-u', '-c', runner,
+                                        str(CHECK.ROOT / 'scripts/check.py'), str(log), child],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+            prefix = b'\xffprogress\x00diagnostic'
+            observed = b''
+            try:
+                deadline = time.monotonic() + 5
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    while prefix not in observed:
+                        remaining = deadline - time.monotonic()
+                        self.assertGreater(remaining, 0, 'output buffered until child exit')
+                        self.assertTrue(selector.select(remaining), 'output buffered until child exit')
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        self.assertTrue(chunk, 'runner exited before live output')
+                        observed += chunk
+                self.assertIsNone(process.poll(), 'child must still be waiting for input')
+                self.assertEqual(log.read_bytes(), prefix)
+            finally:
+                try:
+                    tail, _ = process.communicate(input=b'\n', timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate(timeout=5)
+                    raise
+            self.assertEqual(process.returncode, 7)
+            self.assertTrue((observed + tail).endswith(prefix + b'\ncomplete\n'))
+            self.assertEqual(log.read_bytes(), prefix + b'\ncomplete\n')
 
 
 if __name__ == '__main__':

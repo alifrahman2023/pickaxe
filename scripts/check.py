@@ -16,9 +16,11 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {'cli_baseline': 'tests/cli_baseline.py',
-          'candidate_containment': 'tests/candidate_containment.py'}
+          'candidate_containment': 'tests/candidate_containment.py',
+          'publication_protocol': 'tests/publication_protocol.py'}
 MODEL_SOURCES = {'tests/candidate_containment.py', 'tests/fixtures/candidate_model.py',
                  'tests/fixtures/ordered_replay.py'}
+PUBLICATION_SOURCES = {'tests/publication_protocol.py', 'tests/helpers/publication_probe.cpp'}
 TOOL_TEST_SOURCE = 'tests/check_evidence.py'
 
 
@@ -81,10 +83,14 @@ def verify(bundle, current_sources=False):
                     if source.is_absolute():
                         source = source.relative_to(bundle['source_root'])
                     normalized[source.as_posix()] = digest
-                require(MODEL_SOURCES <= normalized.keys(), 'candidate source metadata incomplete')
+                required = PUBLICATION_SOURCES if group == 'publication_protocol' else MODEL_SOURCES
+                require(required <= normalized.keys(), f'{group}: source metadata incomplete')
                 for path, digest in normalized.items():
                     require(bundle['sources'][path] == digest, 'model source hash mismatch')
                 git_hash = record['git_sha256']
+                if group == 'publication_protocol':
+                    require(record['probe_sha256'] == bundle['publication_probe_sha256'],
+                            'publication probe binary hash mismatch')
             require(git_hash == bundle['git_sha256'], 'Git binary hash mismatch')
     counts = [int(n) for n in re.findall(r'Ran (\d+) tests? in', bundle['ctest_log'])]
     require(sorted(counts) == sorted(len(r) for r in bundle['records'].values()),
@@ -103,11 +109,22 @@ def verify(bundle, current_sources=False):
 
 def execute(command, log):
     print('+ ' + ' '.join(str(arg) for arg in command), flush=True)
-    result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    log.write_bytes(result.stdout)
-    sys.stdout.buffer.write(result.stdout)
-    sys.stdout.flush()
-    return result.returncode
+    with log.open('wb') as output, subprocess.Popen(
+            command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
+        try:
+            while True:
+                chunk = process.stdout.read1(65536)
+                if not chunk:
+                    break
+                output.write(chunk)
+                output.flush()
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            return process.wait()
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
 
 
 def run(build):
@@ -132,6 +149,7 @@ def run(build):
         require(execute(command, attempt / (label + '.log')) == 0, f'{label} failed; see {attempt}')
     source_paths = [ROOT / 'CMakeLists.txt', ROOT / 'src/main.cpp']
     source_paths += list((ROOT / 'tests').rglob('*.py')) + list((ROOT / 'scripts').glob('*.py'))
+    source_paths += list((ROOT / 'tests').rglob('*.cpp'))
     source_paths += list((ROOT / '.github/workflows').glob('*.yml'))
     sources = {p.relative_to(ROOT).as_posix(): sha256(p) for p in sorted(source_paths)}
     git = shutil.which('git')
@@ -145,6 +163,7 @@ def run(build):
                   worktree_status=subprocess.check_output(['git', 'status', '--short'], cwd=ROOT).decode(),
                   platform=platform.platform(), python=platform.python_version(),
                   git_path=git, git_sha256=git_hash, pk_sha256=pk_hash, sources=sources,
+                  publication_probe_sha256=sha256(build / 'publication_probe'),
                   git_build=subprocess.check_output([git, 'version', '--build-options']).decode(),
                   configure_log=(attempt / 'configure.log').read_text(),
                   build_log=(attempt / 'build.log').read_text(),
