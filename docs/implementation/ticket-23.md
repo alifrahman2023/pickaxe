@@ -4,7 +4,8 @@ The owner approved a reduced active workload: **three existing Git-history
 needles, with Linux deferred**. Selection and saved-byte verification are complete;
 see [the selected evidence](evidence/ticket-23-selected-git.json). This supersedes
 the earlier plan to resume the 23 remaining Linux searches. No new history
-searches were needed. #24 remains unstarted and PR #53 stays draft.
+searches were needed. The owner subsequently approved [#24 baseline work](ticket-24.md)
+in the same PR using this subset; PR #53 stays draft.
 
 The original R14 / AC3 two-repository, twelve-needle protocol remains incomplete;
 the existing full-workload archive retains `complete=false`. This report records

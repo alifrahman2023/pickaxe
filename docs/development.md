@@ -138,6 +138,36 @@ python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-
 
 Add `--budget-seconds <approved-seconds>` and omit `--preflight` only after the
 budget decision. One completed query took about 16 minutes; the deferred original protocol
-still has 11 original queries and 12 reproductions pending, with unknown costs. #24 remains unstarted and PR
-#53 stays draft. Before changing Git configuration or attribute capture, consult
+still has 11 original queries and 12 reproductions pending, with unknown costs.
+#24 now uses only the approved three-needle Git subset; PR #53 stays draft. Before changing Git configuration or attribute capture, consult
 [the eligibility input inventory](implementation/eligibility-inventory.md).
+
+## Reference-Git baselines (#24)
+
+`python3 scripts/baselines.py` consumes the approved selected evidence, validates
+its frozen/audited identities and saved bytes, and reuses the cached repository
+shape. `--preflight` lists the complete sequential schedule without searches or
+output files. Execution requires the same approved runtime budget as other
+expensive tooling. No Linux work is included in the current selection.
+
+```sh
+python3 scripts/baselines.py --selection docs/implementation/evidence/ticket-23-selected-git.json --output-dir build/benchmarks/git-baselines --activity-note 'describe relevant current background activity' --preflight
+```
+
+For the three selected Git needles the schedule has 18 searches: one untimed
+warm-up and five measured warm runs per needle. Replace `--preflight` with
+`--budget-seconds <approved-seconds>` to execute into a fresh output directory.
+Stdout/stderr go to distinct regular files. The interval covers process startup
+through foreground completion; hashes, counts and byte comparisons happen
+outside timing. Raw values, statuses, identities, medians and ranges remain in
+`manifest.json`, with incomplete attempts retained as `manifest.partial.json`.
+A mismatch, cancellation or expiry retains raw streams and leaves completion
+absent. No automatic retries or concurrent timed searches are used.
+
+Optional `--pickaxe <executable>` adds one warm-up and five measurements for that
+implementation, alternating Git/Pickaxe order by sample and executing each
+command sequentially. It doubles the schedule, so review a new preflight and
+budget before paired corpus execution. It does not change the selected needles.
+Cold evidence is unavailable without a credible independent reset; a new process
+is not a cold run. Hashing input packs itself warms caches. Five samples support
+median/range reporting, not tail estimates or acceleration qualification.

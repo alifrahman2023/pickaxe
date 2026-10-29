@@ -484,5 +484,157 @@ class BenchmarkWorkloads(unittest.TestCase):
                 self.assertIn(b'nonempty bytes without NUL', result.stderr)
 
 
+class ReferenceBaselines(unittest.TestCase):
+    def fixture(self, root):
+        repo, env = BenchmarkWorkloads().make_history(root, [b'a a rare\n', b'a rare\n'])
+        shape_path = root / 'shape.json'
+        subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                        'characterize', '--budget-seconds', '20', '--repo', str(repo),
+                        '--output', str(shape_path)], env=env, check=True)
+        original, reproduced = root / 'original', root / 'reproduced'
+        original.mkdir()
+        reproduced.mkdir()
+        records = []
+        git_path = shutil.which('git')
+        for name, role, needle, matches in [('common', 'common', b'a', 2),
+                                            ('rare', 'rare', b'rare', 1),
+                                            ('zero', 'zero-match', b'never', 0)]:
+            result = subprocess.run([git_path, '--no-pager', 'log', '--all',
+                                     '-S' + needle.decode(), '--'], cwd=repo, env=env,
+                                    capture_output=True, check=True)
+            record = dict(id=name, role=role, hex=needle.hex(), status=0,
+                          matches=matches, stdout_bytes=len(result.stdout))
+            for extension, data in [('stdout', result.stdout), ('stderr', result.stderr)]:
+                for directory in [original, reproduced]:
+                    (directory / name).with_suffix('.' + extension).write_bytes(data)
+                record[extension + '_sha256'] = hashlib.sha256(data).hexdigest()
+            records.append(record)
+        manifest = original / 'manifest.json'
+        manifest.write_text(json.dumps(dict(shape=json.loads(shape_path.read_text()),
+            needles=records, git_path=git_path, git_sha256=CHECK.sha256(git_path))))
+        audit = reproduced / 'verified.json'
+        audit.write_text(json.dumps(dict(frozen_manifest_sha256=CHECK.sha256(manifest))))
+        selection = root / 'selection.json'
+        selection.write_text(json.dumps(dict(repo=str(repo),
+            original_manifest=dict(path=str(manifest), sha256=CHECK.sha256(manifest)),
+            audited_reproduction=dict(path=str(audit), sha256=CHECK.sha256(audit)),
+            needles=[dict(c, original_base=str(original / c['id']),
+                          reproduction_base=str(reproduced / c['id'])) for c in records])))
+        command = [sys.executable, str(CHECK.ROOT / 'scripts/baselines.py'),
+                   '--selection', str(selection), '--output-dir', str(root / 'baseline'),
+                   '--activity-note', 'isolated tiny fixture']
+        return command, selection
+
+    def test_warm_samples_are_sequential_verified_and_ready_for_pairs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command, selection = self.fixture(root)
+            pickaxe = root / 'pickaxe'
+            pickaxe.write_text('#!' + sys.executable + '\nimport os, sys, time\n'
+                'time.sleep(0.02)\n'
+                'os.execv(' + repr(shutil.which('git')) + ', ["git", "--no-pager", "log", '
+                '"--all", "-S" + sys.argv[2], "--"])\n')
+            pickaxe.chmod(0o755)
+            result = subprocess.run(command + ['--budget-seconds', '20', '--pickaxe', str(pickaxe)],
+                                    capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((root / 'baseline/manifest.json').read_text())
+            self.assertTrue(report['complete'])
+            self.assertEqual(len(report['runs']), 36)
+            self.assertEqual(report['cold']['status'], 'unavailable')
+            common = [r for r in report['runs'] if r['id'] == 'common']
+            self.assertEqual([(r['sample'], r['implementation']) for r in common],
+                [(0, 'git'), (0, 'pickaxe'), (1, 'git'), (1, 'pickaxe'),
+                 (2, 'pickaxe'), (2, 'git'), (3, 'git'), (3, 'pickaxe'),
+                 (4, 'pickaxe'), (4, 'git'), (5, 'git'), (5, 'pickaxe')])
+            for previous, following in zip(report['runs'], report['runs'][1:]):
+                self.assertLessEqual(previous['finished_ns'], following['started_ns'])
+            for record in report['runs']:
+                self.assertEqual(record['status'], 0)
+                self.assertTrue(record['bytes_verified'])
+                if record['phase'] == 'warmup':
+                    self.assertIsNone(record['elapsed_seconds'])
+                elif record['implementation'] == 'pickaxe':
+                    self.assertGreaterEqual(record['elapsed_seconds'], 0.02)
+            for group in report['summary']:
+                self.assertEqual(group['samples'], 5)
+                self.assertLessEqual(group['min_seconds'], group['median_seconds'])
+                self.assertLessEqual(group['median_seconds'], group['max_seconds'])
+
+    def test_failed_command_retains_status_and_raw_files_without_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command, selection = self.fixture(root)
+            pickaxe = root / 'failed-pickaxe'
+            pickaxe.write_text('#!' + sys.executable + '\nimport os, sys\n'
+                               'os.write(1, b"partial"); os.write(2, b"failure"); sys.exit(7)\n')
+            pickaxe.chmod(0o755)
+            result = subprocess.run(command + ['--budget-seconds', '20', '--pickaxe', str(pickaxe)],
+                                    capture_output=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            output = root / 'baseline'
+            self.assertFalse((output / 'manifest.json').exists())
+            report = json.loads((output / 'manifest.partial.json').read_text())
+            self.assertFalse(report['complete'])
+            self.assertEqual(report['runs'][-1]['status'], 7)
+            self.assertFalse(report['runs'][-1]['bytes_verified'])
+            self.assertEqual(Path(report['runs'][-1]['stdout']).read_bytes(), b'partial')
+            self.assertEqual(Path(report['runs'][-1]['stderr']).read_bytes(), b'failure')
+
+    def test_budget_stops_blocked_measurement_and_retains_partial_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command, selection = self.fixture(root)
+            pickaxe, reader = root / 'blocked-pickaxe', root / 'reader'
+            pickaxe.write_text('#!' + sys.executable + '\nimport os, signal, time\n'
+                'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                'open(' + repr(str(reader)) + ', "w").write(str(os.getpid()))\n'
+                'os.write(1, b"partial"); time.sleep(60)\n')
+            pickaxe.chmod(0o755)
+            result = subprocess.run(command + ['--budget-seconds', '4', '--pickaxe', str(pickaxe)],
+                                    capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'budget exhausted', result.stderr)
+            self.assertTrue(reader.exists(), 'budget expired before the fixture reader started')
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(reader.read_text()), 0)
+            output = root / 'baseline'
+            report = json.loads((output / 'manifest.partial.json').read_text())
+            self.assertFalse(report['complete'])
+            self.assertEqual(Path(report['current_command']['stdout']).read_bytes(), b'partial')
+            self.assertFalse((output / 'manifest.json').exists())
+
+    def test_changed_completed_capture_cannot_receive_completion_stamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command, selection = self.fixture(root)
+            pickaxe = root / 'changing-pickaxe'
+            pickaxe.write_text('#!' + sys.executable + '\nimport os, sys\nfrom pathlib import Path\n'
+                'Path(' + repr(str(root / 'baseline/common-git-0.stdout')) + ').write_bytes(b"changed")\n'
+                'os.execv(' + repr(shutil.which('git')) + ', ["git", "--no-pager", "log", '
+                '"--all", "-S" + sys.argv[2], "--"])\n')
+            pickaxe.chmod(0o755)
+            result = subprocess.run(command + ['--budget-seconds', '20', '--pickaxe', str(pickaxe)],
+                                    capture_output=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0, 'changed evidence accepted as complete')
+            self.assertFalse((root / 'baseline/manifest.json').exists())
+            self.assertTrue((root / 'baseline/manifest.partial.json').exists())
+
+    def test_preflight_is_read_only_and_execution_requires_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command, selection = self.fixture(root)
+            result = subprocess.run(command + ['--preflight'], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plan = json.loads(result.stdout)
+            self.assertEqual(len(plan['commands']), 18)
+            self.assertEqual(sum(c['phase'] == 'warmup' for c in plan['commands']), 3)
+            self.assertFalse((root / 'baseline').exists())
+            result = subprocess.run(command, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'--budget-seconds', result.stderr)
+            self.assertFalse((root / 'baseline').exists())
+
+
 if __name__ == '__main__':
     unittest.main()
