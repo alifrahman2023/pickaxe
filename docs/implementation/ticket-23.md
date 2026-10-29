@@ -1,9 +1,15 @@
 # Ticket #23: frozen benchmark workloads
 
-Work in progress for #23 only. This report will record measured completion
-evidence before #23 closes. The owner stopped scope at #23; #24 remains unstarted. Scope: R14 / AC3 of specification #15 and the canonical
-benchmark resolution in #5. No acceleration or capacity claim follows from
-preparing these source histories.
+The owner approved a reduced active workload: **three existing Git-history
+needles, with Linux deferred**. Selection and saved-byte verification are complete;
+see [the selected evidence](evidence/ticket-23-selected-git.json). This supersedes
+the earlier plan to resume the 23 remaining Linux searches. No new history
+searches were needed. #24 remains unstarted and PR #53 stays draft.
+
+The original R14 / AC3 two-repository, twelve-needle protocol remains incomplete;
+the existing full-workload archive retains `complete=false`. This report records
+the reduced result without claiming completion of those original checks. No
+acceleration or capacity claim follows from preparing these source histories.
 
 The branch `ticket/23-24-benchmark-baselines` starts at
 `9fa69c3ae626eb6cf4d8e4184e4764483eea0fa2`, the verified PR #52 merge.
@@ -342,3 +348,28 @@ retained at `docs/implementation/evidence/ticket-23-checks.json.gz`; this is
 fixture evidence only and does not complete the workload archive. The seven
 original local guidance hashes still match the handoff capture, and the
 untracked retrospective is preserved.
+
+
+## Approved reduced workload: complete
+
+The owner selected “Use the three existing Git results; defer Linux.” The active
+selection is `common-return` (common, 11,623 matches), `rare-subscribe` (rare,
+1 match), and `zero-a` (zero-match, 0 matches). They cover frequent results,
+selective results, and an empty result. These are complete searches of the
+existing frozen Git B scope, not truncated histories. A zero-match result does
+not establish absence from historical content.
+
+All three original status records are zero. Each original stdout/stderr hash,
+stdout size and match count was rechecked, and all six stdout/stderr file pairs
+were compared byte for byte with the already audited reproduction. That audit
+points to the exact retained original manifest hash. The selected metadata
+records exact needle bytes, counts, output hashes, source artifact paths and
+manifest identities in `evidence/ticket-23-selected-git.json`.
+
+No new history searches, acquisition, characterization or performance runs were
+started. Linux originals, interrupted outputs and checkpoints remain retained
+and deferred; no 30-minute job is scheduled. Future benchmark work within this
+reduced scope should use these three selected records. The original twelve-role
+`freeze` protocol is unchanged and is not the execution path for this saved
+subset. The full workload archive remains honestly incomplete; #23 stays open,
+PR #53 draft, and #24 unstarted.

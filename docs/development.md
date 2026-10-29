@@ -123,14 +123,21 @@ stamps stay absent. Resume archives interrupted streams before retry. The limit
 never truncates history or output to satisfy the workload requirements. A small
 budget may expire during validation before any reader starts.
 
-For #23's pending Linux work, this is the read-only preflight:
+The owner subsequently selected three already captured/reproduced Git needles
+and deferred Linux. The active subset is recorded in
+[the selected evidence](implementation/evidence/ticket-23-selected-git.json);
+its saved bytes were reverified without new history searches. No corpus job is
+scheduled. The original twelve-role freeze interface remains unchanged.
+
+For a separately approved future resumption of the original Linux protocol,
+this is the read-only preflight:
 
 ```sh
 python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-B --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen --resume --jobs 2 --preflight
 ```
 
 Add `--budget-seconds <approved-seconds>` and omit `--preflight` only after the
-budget decision. One completed query took about 16 minutes; 11 original queries
-and 12 reproductions remain, with unknown costs. #24 remains unstarted and PR
+budget decision. One completed query took about 16 minutes; the deferred original protocol
+still has 11 original queries and 12 reproductions pending, with unknown costs. #24 remains unstarted and PR
 #53 stays draft. Before changing Git configuration or attribute capture, consult
 [the eligibility input inventory](implementation/eligibility-inventory.md).

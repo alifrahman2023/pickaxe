@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "qualification": false,
+  "scope": "owner-approved three-needle Git subset; Linux deferred",
+  "complete_for_selected_subset": true,
+  "original_full_protocol_complete": false,
+  "new_history_searches": 0,
+  "repo": "build/benchmarks/git-B",
+  "head": "777489f9e09c8d0dd6b12f9d90de6376330577a2",
+  "refs": [
+    "refs/heads/benchmark 777489f9e09c8d0dd6b12f9d90de6376330577a2"
+  ],
+  "original_manifest": {
+    "path": "build/benchmarks/git-frozen/manifest.json",
+    "sha256": "2f4d03a4c1be3eee61b10393f7834d78d04d85c668608121ca1c8923a69f1f59"
+  },
+  "audited_reproduction": {
+    "path": "build/benchmarks/git-audited-reproduction/verified.json",
+    "sha256": "f73cd5b96186f21b9098ea681d0daf7241ea9f66236b1526d9339e6d1207483c",
+    "completed_at": "2026-10-29T17:07:26.408462+00:00"
+  },
+  "verification": "Rechecked original hashes, stdout sizes and match counts; compared all six retained stdout/stderr pairs byte for byte. No Git searches executed.",
+  "needles": [
+    {
+      "hex": "72657475726e",
+      "id": "common-return",
+      "matches": 11623,
+      "role": "common",
+      "status": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 11021349,
+      "stdout_sha256": "de207764f27dbb54dba4cb93262e0fcaefc9acbbe5e4d556d5824f1b2782a649",
+      "original_base": "build/benchmarks/git-frozen/common-return",
+      "reproduction_base": "build/benchmarks/git-audited-reproduction/common-return"
+    },
+    {
+      "hex": "6769742b73756273637269626540766765722e6b65726e656c2e6f7267",
+      "id": "rare-subscribe",
+      "matches": 1,
+      "role": "rare",
+      "status": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 487,
+      "stdout_sha256": "2f1aa7caa76be74071b7f55c4132b3ea923b456072d43488e4502595ad05302f",
+      "original_base": "build/benchmarks/git-frozen/rare-subscribe",
+      "reproduction_base": "build/benchmarks/git-audited-reproduction/rare-subscribe"
+    },
+    {
+      "hex": "7069636b6178652d7a65726f2d6d617463682d32303236313032392d612d3965363765633134",
+      "id": "zero-a",
+      "matches": 0,
+      "role": "zero-match",
+      "status": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original_base": "build/benchmarks/git-frozen/zero-a",
+      "reproduction_base": "build/benchmarks/git-audited-reproduction/zero-a"
+    }
+  ]
+}
