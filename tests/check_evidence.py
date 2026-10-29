@@ -532,6 +532,7 @@ class ReferenceBaselines(unittest.TestCase):
             pickaxe = root / 'pickaxe'
             pickaxe.write_text('#!' + sys.executable + '\nimport os, sys, time\n'
                 'time.sleep(0.02)\n'
+                'os.write(2, b"pk: Git fallback; acceleration is not enabled in this build\\n")\n'
                 'os.execv(' + repr(shutil.which('git')) + ', ["git", "--no-pager", "log", '
                 '"--all", "-S" + sys.argv[2], "--"])\n')
             pickaxe.chmod(0o755)
@@ -555,6 +556,9 @@ class ReferenceBaselines(unittest.TestCase):
             for record in report['runs']:
                 self.assertEqual(record['status'], 0)
                 self.assertTrue(record['bytes_verified'])
+                if record['implementation'] == 'pickaxe':
+                    self.assertEqual(Path(record['stderr']).read_bytes(),
+                        b'pk: Git fallback; acceleration is not enabled in this build\n')
                 if record['phase'] == 'warmup':
                     self.assertIsNone(record['elapsed_seconds'])
                 elif record['implementation'] == 'pickaxe':
@@ -611,6 +615,92 @@ class ReferenceBaselines(unittest.TestCase):
             self.assertGreater(interrupted['interrupted_duration_seconds'], 0)
             self.assertFalse(interrupted['bytes_verified'])
             self.assertFalse((output / 'manifest.json').exists())
+
+    def test_budget_stops_helper_after_reader_exits_on_sigterm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command, selection = self.fixture(root)
+            ready, pickaxe = root / 'helper.json', root / 'parent-pickaxe'
+            helper = ('import json, os, signal, time; '
+                      'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                      'open(' + repr(str(ready)) + ', "w").write(json.dumps('
+                      '{"pid":os.getpid(),"group":os.getpgrp()})); time.sleep(60)')
+            pickaxe.write_text('#!' + sys.executable + '\nimport subprocess, sys, time\n'
+                'from pathlib import Path\n'
+                'subprocess.Popen([sys.executable, "-c", ' + repr(helper) + '])\n'
+                'while not Path(' + repr(str(ready)) + ').exists(): time.sleep(0.01)\n'
+                'time.sleep(60)\n')
+            pickaxe.chmod(0o755)
+            identity = None
+            try:
+                result = subprocess.run(command + ['--budget-seconds', '4', '--pickaxe', str(pickaxe)],
+                                        capture_output=True, timeout=10)
+                self.assertIn(b'budget exhausted', result.stderr)
+                self.assertTrue(ready.exists(), 'helper did not start')
+                identity = json.loads(ready.read_text())
+                deadline = time.monotonic() + 1
+                while True:
+                    try:
+                        os.kill(identity['pid'], 0)
+                    except ProcessLookupError:
+                        break
+                    self.assertLess(time.monotonic(), deadline, 'helper survived its reader cancellation')
+                    time.sleep(0.01)
+                self.assertFalse((root / 'baseline/manifest.json').exists())
+            finally:
+                if identity is None and ready.exists():
+                    identity = json.loads(ready.read_text())
+                if identity is not None:
+                    try:
+                        os.killpg(identity['group'], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_reproduction_budget_interrupts_creation_without_leaking_reader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command, selection = self.fixture(root)
+            manifest_path = root / 'original/manifest.json'
+            manifest = json.loads(manifest_path.read_text())
+            manifest['environment'] = dict(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                                          LC_ALL='C', TZ='UTC')
+            manifest_path.write_text(json.dumps(manifest))
+            reader = root / 'reader'
+            # Inject a cancellation at the external Popen boundary, after a real
+            # blocking child exists but before Popen returns it to the owner.
+            runner = ('import os, runpy, signal, subprocess, sys\nfrom pathlib import Path\n'
+                'real = subprocess.Popen\n'
+                'def controlled(argv, *args, **kwargs):\n'
+                ' if [os.fsdecode(a) for a in argv][1:4] == ["--no-pager", "log", "--all"]:\n'
+                '  child = real([sys.executable, "-c", "import time; time.sleep(60)"], *args, **kwargs)\n'
+                '  Path(' + repr(str(reader)) + ').write_text(str(child.pid))\n'
+                '  os.kill(os.getpid(), signal.SIGALRM)\n'
+                '  return child\n'
+                ' return real(argv, *args, **kwargs)\n'
+                'subprocess.Popen = controlled\n'
+                'sys.argv = sys.argv[1:]\n'
+                'runpy.run_path(sys.argv[0], run_name="__main__")\n')
+            pid = None
+            try:
+                result = subprocess.run([sys.executable, '-c', runner,
+                    str(CHECK.ROOT / 'scripts/benchmarks.py'), 'reproduce',
+                    '--repo', str(root / 'repo'), '--frozen', str(root / 'original'),
+                    '--output-dir', str(root / 'retry'), '--budget-seconds', '20'],
+                    capture_output=True, timeout=10)
+                self.assertIn(b'budget exhausted', result.stderr)
+                self.assertTrue(reader.exists())
+                pid = int(reader.read_text())
+                with self.assertRaises(ProcessLookupError, msg='unregistered reader survived cancellation'):
+                    os.kill(pid, 0)
+                self.assertFalse((root / 'retry/verified.json').exists())
+            finally:
+                if pid is None and reader.exists():
+                    pid = int(reader.read_text())
+                if pid is not None:
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_changed_completed_capture_cannot_receive_completion_stamp(self):
         with tempfile.TemporaryDirectory() as directory:

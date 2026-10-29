@@ -8,7 +8,6 @@ import os
 import platform
 import plistlib
 import statistics
-import time
 from pathlib import Path
 import re
 import signal
@@ -116,43 +115,19 @@ class MeasurementInterrupted(RuntimeError):
 def execute(command, repo):
     owner = workloads.CaptureProcesses()
     with Path(command['stdout']).open('wb') as stdout, Path(command['stderr']).open('wb') as stderr:
-        started = time.perf_counter_ns()
         try:
-            # Defer cancellation only through process creation and registration.
-            # Children inherit normal signal dispositions across exec; no mask is inherited.
-            pending = []
-            handlers = {}
-            try:
-                for signum in [signal.SIGALRM, signal.SIGTERM]:
-                    handlers[signum] = signal.signal(signum, lambda sig, frame: pending.append((sig, frame)))
-                process = owner.start([os.fsencode(arg) for arg in command['argv']], cwd=repo,
-                                      env=workloads.environment(), stdout=stdout, stderr=stderr)
-            finally:
-                for signum, handler in handlers.items():
-                    signal.signal(signum, handler)
-            if pending:
-                handlers[pending[0][0]](*pending[0])
-            status = process.wait()
-            finished = time.perf_counter_ns()
-        except BaseException as error:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            owner.cancel()
-            children = list(owner.active)
-            for child in children:
-                child.wait()
-                owner.finished(child)
-            finished = time.perf_counter_ns()
-            record = dict(command, status=children[-1].returncode if children else None,
-                started_ns=started, finished_ns=finished,
-                interrupted_duration_seconds=(finished - started) / 1e9,
+            result = owner.run([os.fsencode(arg) for arg in command['argv']], cwd=repo,
+                               env=workloads.environment(), stdout=stdout, stderr=stderr)
+        except workloads.CaptureInterrupted as error:
+            timing = error.result
+            record = dict(command, **timing,
+                interrupted_duration_seconds=(timing['finished_ns'] - timing['started_ns']) / 1e9,
                 elapsed_seconds=None, interrupted=True, bytes_verified=False,
                 stdout_bytes=Path(command['stdout']).stat().st_size,
                 stderr_bytes=Path(command['stderr']).stat().st_size)
             raise MeasurementInterrupted(error, record) from error
-        else:
-            owner.finished(process)
-    return dict(status=status, started_ns=started, finished_ns=finished,
-                elapsed_seconds=(finished - started) / 1e9 if command['phase'] == 'warm' else None)
+    return dict(result, elapsed_seconds=(result['finished_ns'] - result['started_ns']) / 1e9
+                if command['phase'] == 'warm' else None)
 
 
 def measure(args, selection, repo, shape, commands, source_hashes):
@@ -172,6 +147,8 @@ def measure(args, selection, repo, shape, commands, source_hashes):
         approved_budget_seconds=args.budget_seconds,
         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         output_sink='separate regular files for stdout and stderr, opened before each command',
+        verification_policy='Git stdout/stderr match reference exactly; Pickaxe stdout/status match reference, '
+                            'with its own stderr retained and checked for later alteration',
         cache_policy='one unreported warm-up per query/implementation, then five warm samples; '
                      'input validation hashes packs and warms caches; no independent reset performed',
         cold=dict(status='unavailable', reason='no credible independent cache reset configured; new processes are not cold cache'),
@@ -197,7 +174,8 @@ def measure(args, selection, repo, shape, commands, source_hashes):
             workloads.save(partial, report)
             workloads.compare_record(expected[command['id']],
                 {k: record[k] for k in ['status', 'stdout_bytes', 'stdout_sha256', 'stderr_sha256', 'matches']},
-                Path(expected[command['id']]['original_base']), base)
+                Path(expected[command['id']]['original_base']), base,
+                compare_stderr=command['implementation'] == 'git')
             record['bytes_verified'] = True
             report.pop('current_command')
             workloads.save(partial, report)
@@ -217,7 +195,8 @@ def measure(args, selection, repo, shape, commands, source_hashes):
             if actual != {k: record[k] for k in actual}:
                 raise ValueError('retained measured capture changed: ' + str(base))
             workloads.compare_record(expected[record['id']], actual,
-                                     Path(expected[record['id']]['original_base']), base)
+                                     Path(expected[record['id']]['original_base']), base,
+                                     compare_stderr=record['implementation'] == 'git')
         workloads.validate_shape(repo, shape)
         for path, digest in source_hashes.items():
             if workloads.digest(path) != digest:

@@ -171,3 +171,13 @@ budget before paired corpus execution. It does not change the selected needles.
 Cold evidence is unavailable without a credible independent reset; a new process
 is not a cold run. Hashing input packs itself warms caches. Five samples support
 median/range reporting, not tail estimates or acceleration qualification.
+
+
+Captured commands share one process owner for preparation, reproduction and
+measurements. It protects creation/registration from cancellation, sends SIGTERM
+to every owned process group, then SIGKILL after a common half-second grace even
+if the leader already exited. Direct children are reaped before cleanup returns.
+For paired measurements, Pickaxe stdout/status must match the reference; its
+stderr diagnostics are retained and checked for later alteration, rather than
+required to equal Git's stderr. Git reproductions still require both streams to
+match exactly.

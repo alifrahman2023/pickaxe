@@ -95,3 +95,19 @@ This completes #24 for the owner-approved three-query Git subset. Original
 Linux/full-role evidence remains deferred. Both issues remain open for review,
 PR #53 stays draft, native dependencies remain intact, and no later ticket is
 started.
+
+
+## Full-PR review fixes
+
+A subsequent full-PR review reproduced surviving helper processes after their
+reader exited, a launch/registration cancellation window in standalone
+reproduction, and rejection of Pickaxe's valid fallback stderr diagnostics.
+Preparation, reproduction and measurements now share protected process ownership
+and whole-group cleanup. Pairing checks Pickaxe's stdout/status contract while
+retaining its own stderr and checking those bytes for later alteration. Reference
+Git reproduction keeps exact stdout/stderr comparison.
+
+Tiny regressions reproduce both lifecycle defects and exercise a paired process
+that emits Pickaxe's documented fallback diagnostic. The earlier real Git-only
+measurements and their source-pinned archive remain unchanged historical evidence;
+no corpus measurements were rerun for these fixes.

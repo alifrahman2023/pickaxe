@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 PINS = {
     'git': ('https://github.com/git/git.git',
@@ -258,41 +259,102 @@ def prepare(root, name):
         print(name, label, shape['commits'], shape['unique_blob_bytes'], flush=True)
 
 
+class CaptureInterrupted(InterruptedError):
+    def __init__(self, error, result):
+        super().__init__(str(error))
+        self.result = result
+
+
 class CaptureProcesses:
-    """Own the Git readers for one untimed preparation batch."""
+    """Own process creation, waiting and group cleanup for captured commands."""
     def __init__(self):
         self.lock = threading.Lock()
         self.active = set()
         self.cancelled = False
 
-    def start(self, *args, **kwargs):
-        with self.lock:
-            if self.cancelled:
-                raise InterruptedError('capture batch cancelled')
-            process = subprocess.Popen(*args, start_new_session=True, **kwargs)
-            self.active.add(process)
-            return process
+    def run(self, *args, **kwargs):
+        process = None
+        started = time.perf_counter_ns()
+        main_thread = threading.current_thread() is threading.main_thread()
+        try:
+            pending, handlers = [], {}
+            try:
+                # Python dispatches signals on the main thread. Worker launches
+                # instead synchronize registration with cancellation via the lock.
+                if main_thread:
+                    for signum in [signal.SIGALRM, signal.SIGTERM]:
+                        handlers[signum] = signal.signal(signum, lambda sig, frame: pending.append((sig, frame)))
+                with self.lock:
+                    self.check_cancelled()
+                    process = subprocess.Popen(*args, start_new_session=True, **kwargs)
+                    self.active.add(process)
+            finally:
+                for signum, handler in handlers.items():
+                    signal.signal(signum, handler)
+            if pending:
+                signum, frame = pending[0]
+                handler = handlers[signum]
+                if callable(handler):
+                    handler(signum, frame)
+                elif handler != signal.SIG_IGN:
+                    raise InterruptedError('capture interrupted by signal ' + str(signum))
+            status = process.wait()
+            finished = time.perf_counter_ns()
+        except BaseException as error:
+            self.cancel()
+            if process is not None:
+                process.wait()
+            raise CaptureInterrupted(error, dict(
+                status=process.returncode if process is not None else None,
+                started_ns=started, finished_ns=time.perf_counter_ns())) from error
+        finally:
+            if process is not None:
+                with self.lock:
+                    self.active.discard(process)
+        return dict(status=status, started_ns=started, finished_ns=finished)
 
     def check_cancelled(self):
         if self.cancelled:
-            raise InterruptedError("capture cancelled; raw streams retained")
+            raise InterruptedError('capture cancelled; raw streams retained')
 
-    def finished(self, process):
-        with self.lock:
-            self.active.discard(process)
+    @staticmethod
+    def _signal_group(process, signum):
+        process.poll()
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+        except PermissionError as error:
+            # macOS can report EPERM for an exited but unreaped leader. Reap
+            # before retrying its saved group ID, which may still contain helpers.
+            try:
+                process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                raise error
+            try:
+                os.killpg(process.pid, signum)
+            except ProcessLookupError:
+                pass
 
     def cancel(self):
+        if threading.current_thread() is threading.main_thread():
+            signal.setitimer(signal.ITIMER_REAL, 0)
         with self.lock:
+            if self.cancelled:
+                return
             self.cancelled = True
-            for process in self.active:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=0.5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            processes = list(self.active)
+            if not processes:
+                return
+            for process in processes:
+                self._signal_group(process, signal.SIGTERM)
+            # A group can outlive its leader. Give all groups one common grace
+            # interval, then kill surviving members independently of parent status.
+            time.sleep(0.5)
+            for process in processes:
+                self._signal_group(process, signal.SIGKILL)
+            for process in processes:
+                process.wait()
 
 
 def capture_record(output, status, processes=None):
@@ -312,19 +374,11 @@ def capture_record(output, status, processes=None):
 def reference(repo, needle, output, processes=None):
     processes = processes or CaptureProcesses()
     with output.with_suffix('.stdout').open('wb') as stdout, output.with_suffix('.stderr').open('wb') as stderr:
-        process = processes.start([os.fsencode(GIT), b'--no-pager', b'log', b'--all', b'-S' + needle, b'--'],
-                                  cwd=repo, env=environment(), stdout=stdout, stderr=stderr)
-        try:
-            status = process.wait()
-        except BaseException:
-            processes.cancel()
-            process.wait()
-            raise
-        finally:
-            processes.finished(process)
+        result = processes.run([os.fsencode(GIT), b'--no-pager', b'log', b'--all', b'-S' + needle, b'--'],
+                               cwd=repo, env=environment(), stdout=stdout, stderr=stderr)
     if processes.cancelled:
         raise InterruptedError("capture cancelled; raw streams retained")
-    return capture_record(output, status, processes)
+    return capture_record(output, result['status'], processes)
 
 
 def capture_batch(repo, candidates, destination, jobs, completed, suffix=''):
@@ -345,10 +399,12 @@ def capture_batch(repo, candidates, destination, jobs, completed, suffix=''):
             raise
 
 
-def compare_record(expected, actual, original, reproduced):
+def compare_record(expected, actual, original, reproduced, *, compare_stderr=True):
+    if not compare_stderr:
+        actual = {key: value for key, value in actual.items() if not key.startswith("stderr_")}
     if actual != {key: expected[key] for key in actual}:
         raise ValueError('reference output did not reproduce: ' + str(original))
-    for suffix in ['.stdout', '.stderr']:
+    for suffix in (['.stdout', '.stderr'] if compare_stderr else ['.stdout']):
         if not filecmp.cmp(original.with_suffix(suffix), reproduced.with_suffix(suffix), shallow=False):
             raise ValueError('reference bytes did not reproduce: ' + str(original))
 
