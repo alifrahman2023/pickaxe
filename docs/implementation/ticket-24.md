@@ -19,11 +19,11 @@ runs. Git is the only implementation in the current corpus run. Optional
 ordering alternating between samples; it keeps the same selected workload.
 A pair is never timed concurrently.
 
-The monotonic interval begins immediately before process creation and ends
+The monotonic interval begins before launch bookkeeping/process creation and ends
 when foreground command completion is observed. It includes startup, internal
 integrity/traversal/helper work, formatting and writes to separate stdout/stderr
 files. File opening, metadata collection, counting, hashing and exact byte
-comparison occur outside timing. Process creation/wait scheduling overhead is
+comparison occur outside timing. Launch bookkeeping and process creation/wait scheduling overhead are
 included and not subtracted. This is captured-output latency, not terminal
 rendering or durable-storage latency.
 
@@ -51,3 +51,11 @@ No Linux traversal is part of this test loop.
 Real-corpus measurements and the final check archive are pending the completed
 review and fixture check run. The intended real run has 18 Git commands and a
 30-minute total execution ceiling. No Pickaxe timing or Linux run is scheduled.
+
+
+Independent Standards and Spec review identified launch-cancellation ownership,
+post-publication cancellation, interrupted outcome retention and storage metadata
+gaps. All four were fixed and re-reviewed with no residual findings. Interrupted
+records retain actual status, duration, raw sizes and incomplete verification.
+Atomic final-manifest replacement is the terminal success boundary; subsequent
+signals do not revoke completed evidence.

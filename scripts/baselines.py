@@ -6,6 +6,7 @@ import json
 import math
 import os
 import platform
+import plistlib
 import statistics
 import time
 from pathlib import Path
@@ -73,7 +74,23 @@ def plan(selection, repo, destination, pickaxe=None):
     return commands
 
 
-def hardware():
+def storage(path):
+    result = dict(path=str(path.resolve()), device=os.stat(path).st_dev)
+    if sys.platform == "darwin":
+        probe = subprocess.run(["diskutil", "info", "-plist", str(path.resolve())], capture_output=True)
+        if probe.returncode == 0:
+            details = plistlib.loads(probe.stdout)
+            fields = ["DeviceIdentifier", "DeviceNode", "MountPoint", "FilesystemType",
+                      "FileSystemPersonality", "SolidState", "Internal", "Protocol",
+                      "MediaName", "DiskSize", "TotalSize", "APFSPhysicalStores"]
+            result["diskutil"] = {k: details[k] for k in fields if k in details}
+            result["ssd_observation"] = details.get("SolidState", "unavailable in volume report")
+            return result
+    result["details"] = "unavailable; storage type/performance not independently established"
+    return result
+
+
+def hardware(repo, destination):
     result = dict(platform=platform.platform(), machine=platform.machine(),
                   logical_cpus=os.cpu_count(), python=sys.version,
                   python_executable=sys.executable,
@@ -82,25 +99,57 @@ def hardware():
         keys = ['hw.model', 'hw.memsize', 'hw.physicalcpu', 'hw.logicalcpu']
         values = subprocess.check_output(['sysctl', '-n', *keys], text=True).splitlines()
         result['sysctl'] = dict(zip(keys, values))
+        chip = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], capture_output=True, text=True)
+        result['cpu_model'] = chip.stdout.strip() if chip.returncode == 0 else 'unavailable'
     else:
         result['memory_bytes'] = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+    result['storage'] = dict(workload=storage(repo), output=storage(destination))
     return result
+
+
+class MeasurementInterrupted(RuntimeError):
+    def __init__(self, error, record):
+        super().__init__(str(error))
+        self.record = record
 
 
 def execute(command, repo):
     owner = workloads.CaptureProcesses()
     with Path(command['stdout']).open('wb') as stdout, Path(command['stderr']).open('wb') as stderr:
         started = time.perf_counter_ns()
-        process = owner.start([os.fsencode(arg) for arg in command['argv']], cwd=repo,
-                              env=workloads.environment(), stdout=stdout, stderr=stderr)
         try:
+            # Defer cancellation only through process creation and registration.
+            # Children inherit normal signal dispositions across exec; no mask is inherited.
+            pending = []
+            handlers = {}
+            try:
+                for signum in [signal.SIGALRM, signal.SIGTERM]:
+                    handlers[signum] = signal.signal(signum, lambda sig, frame: pending.append((sig, frame)))
+                process = owner.start([os.fsencode(arg) for arg in command['argv']], cwd=repo,
+                                      env=workloads.environment(), stdout=stdout, stderr=stderr)
+            finally:
+                for signum, handler in handlers.items():
+                    signal.signal(signum, handler)
+            if pending:
+                handlers[pending[0][0]](*pending[0])
             status = process.wait()
             finished = time.perf_counter_ns()
-        except BaseException:
+        except BaseException as error:
+            signal.setitimer(signal.ITIMER_REAL, 0)
             owner.cancel()
-            process.wait()
-            raise
-        finally:
+            children = list(owner.active)
+            for child in children:
+                child.wait()
+                owner.finished(child)
+            finished = time.perf_counter_ns()
+            record = dict(command, status=children[-1].returncode if children else None,
+                started_ns=started, finished_ns=finished,
+                interrupted_duration_seconds=(finished - started) / 1e9,
+                elapsed_seconds=None, interrupted=True, bytes_verified=False,
+                stdout_bytes=Path(command['stdout']).stat().st_size,
+                stderr_bytes=Path(command['stderr']).stat().st_size)
+            raise MeasurementInterrupted(error, record) from error
+        else:
             owner.finished(process)
     return dict(status=status, started_ns=started, finished_ns=finished,
                 elapsed_seconds=(finished - started) / 1e9 if command['phase'] == 'warm' else None)
@@ -111,7 +160,7 @@ def measure(args, selection, repo, shape, commands, source_hashes):
     destination.mkdir()  # Retain every attempt; never overwrite one.
     report = dict(schema=1, qualification=False, complete=False, runs=[], summary=[],
         selection_path=str(args.selection.resolve()), selection_sha256=source_hashes[str(args.selection)],
-        source_sha256=source_hashes, shape=shape, hardware=hardware(),
+        source_sha256=source_hashes, shape=shape, hardware=hardware(repo, destination),
         selected_needles=selection['needles'], original_full_protocol_complete=False,
         load_average_before=list(os.getloadavg()),
         git_path=workloads.GIT, git_sha256=workloads.digest(workloads.GIT),
@@ -127,7 +176,7 @@ def measure(args, selection, repo, shape, commands, source_hashes):
                      'input validation hashes packs and warms caches; no independent reset performed',
         cold=dict(status='unavailable', reason='no credible independent cache reset configured; new processes are not cold cache'),
         indexing_memory_budget='not applicable: reference searches; optional Pickaxe has no index builder here',
-        method='Sequential complete processes, perf_counter_ns before Popen through wait; '
+        method='Sequential complete processes, perf_counter_ns before launch bookkeeping/Popen through wait; '
                'includes startup, Git traversal/helpers, formatting and captured output. '
                'Hashing/counting/byte comparison and metadata collection occur outside measured intervals. '
                'Popen/wait scheduling overhead is included, not subtracted. '
@@ -181,8 +230,16 @@ def measure(args, selection, repo, shape, commands, source_hashes):
         inputs(args.selection)
         report.update(complete=True, load_average_after=list(os.getloadavg()), completed_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
         workloads.save(destination / 'manifest.json', report)
+        signal.setitimer(signal.ITIMER_REAL, 0)
         print('complete', destination, flush=True)
     except BaseException as error:
+        # Atomic completion publication is the terminal success boundary. A signal
+        # delivered after replacement cannot revoke already committed evidence.
+        if (destination / 'manifest.json').exists():
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            return
+        if isinstance(error, MeasurementInterrupted):
+            report['runs'].append(error.record)
         report.update(error=str(error), complete=False)
         workloads.save(partial, report)
         raise
@@ -221,7 +278,7 @@ if __name__ == '__main__':
     signal.signal(signal.SIGTERM, workloads.terminate_preparation)
     try:
         main()
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError, workloads.RuntimeBudgetExpired) as error:
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError, workloads.RuntimeBudgetExpired, MeasurementInterrupted) as error:
         sys.exit(str(error))
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)

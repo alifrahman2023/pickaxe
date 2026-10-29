@@ -542,6 +542,9 @@ class ReferenceBaselines(unittest.TestCase):
             self.assertTrue(report['complete'])
             self.assertEqual(len(report['runs']), 36)
             self.assertEqual(report['cold']['status'], 'unavailable')
+            self.assertIn('storage', report['hardware'])
+            self.assertIn('workload', report['hardware']['storage'])
+            self.assertIn('output', report['hardware']['storage'])
             common = [r for r in report['runs'] if r['id'] == 'common']
             self.assertEqual([(r['sample'], r['implementation']) for r in common],
                 [(0, 'git'), (0, 'pickaxe'), (1, 'git'), (1, 'pickaxe'),
@@ -602,6 +605,11 @@ class ReferenceBaselines(unittest.TestCase):
             report = json.loads((output / 'manifest.partial.json').read_text())
             self.assertFalse(report['complete'])
             self.assertEqual(Path(report['current_command']['stdout']).read_bytes(), b'partial')
+            interrupted = report['runs'][-1]
+            self.assertTrue(interrupted['interrupted'])
+            self.assertLess(interrupted['status'], 0)
+            self.assertGreater(interrupted['interrupted_duration_seconds'], 0)
+            self.assertFalse(interrupted['bytes_verified'])
             self.assertFalse((output / 'manifest.json').exists())
 
     def test_changed_completed_capture_cannot_receive_completion_stamp(self):
