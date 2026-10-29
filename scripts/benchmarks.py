@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Frozen, local source-history workloads. Development tooling, not product indexing."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import filecmp
 import hashlib
@@ -8,11 +9,13 @@ import heapq
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 
 PINS = {
     'git': ('https://github.com/git/git.git',
@@ -52,7 +55,17 @@ def digest(path):
 
 
 def save(path, value):
-    Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+    path = Path(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(value, indent=2, sort_keys=True) + '\n')
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
 
 
 def attribute_inputs(repo, common):
@@ -242,16 +255,76 @@ def prepare(root, name):
         print(name, label, shape['commits'], shape['unique_blob_bytes'], flush=True)
 
 
-def reference(repo, needle, output):
-    with output.with_suffix('.stdout').open('wb') as stdout, output.with_suffix('.stderr').open('wb') as stderr:
-        result = subprocess.run([os.fsencode(GIT), b'--no-pager', b'log', b'--all', b'-S' + needle, b'--'],
-                                cwd=repo, env=environment(), stdout=stdout, stderr=stderr)
+class CaptureProcesses:
+    """Own the Git readers for one untimed preparation batch."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.active = set()
+        self.cancelled = False
+
+    def start(self, *args, **kwargs):
+        with self.lock:
+            if self.cancelled:
+                raise InterruptedError('capture batch cancelled')
+            process = subprocess.Popen(*args, **kwargs)
+            self.active.add(process)
+            return process
+
+    def finished(self, process):
+        with self.lock:
+            self.active.discard(process)
+
+    def cancel(self):
+        with self.lock:
+            self.cancelled = True
+            for process in self.active:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+
+
+def capture_record(output, status):
     path = output.with_suffix('.stdout')
     with path.open('rb') as stream:
         matches = sum(bool(re.fullmatch(rb'commit [0-9a-f]{40}\n', line)) for line in stream)
-    return dict(status=result.returncode, stdout_bytes=path.stat().st_size,
+    return dict(status=status, stdout_bytes=path.stat().st_size,
                 stdout_sha256=digest(path), stderr_sha256=digest(output.with_suffix('.stderr')),
                 matches=matches)
+
+
+def reference(repo, needle, output, processes=None):
+    processes = processes or CaptureProcesses()
+    with output.with_suffix('.stdout').open('wb') as stdout, output.with_suffix('.stderr').open('wb') as stderr:
+        process = processes.start([os.fsencode(GIT), b'--no-pager', b'log', b'--all', b'-S' + needle, b'--'],
+                                  cwd=repo, env=environment(), stdout=stdout, stderr=stderr)
+        try:
+            status = process.wait()
+        except BaseException:
+            processes.cancel()
+            process.wait()
+            raise
+        finally:
+            processes.finished(process)
+    return capture_record(output, status)
+
+
+def capture_batch(repo, candidates, destination, jobs, completed, suffix=''):
+    processes = CaptureProcesses()
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = {}
+        try:
+            for candidate in candidates:
+                future = executor.submit(reference, repo, bytes.fromhex(candidate['hex']),
+                                         destination / (candidate['id'] + suffix), processes)
+                futures[future] = candidate
+            for future in as_completed(futures):
+                completed(futures[future], future.result())
+        except BaseException:
+            processes.cancel()
+            for future in futures:
+                future.cancel()
+            raise
 
 
 def compare_record(expected, actual, original, reproduced):
@@ -262,7 +335,16 @@ def compare_record(expected, actual, original, reproduced):
             raise ValueError('reference bytes did not reproduce: ' + str(original))
 
 
-def freeze(repo, candidates_path, destination, shape_manifest=None):
+def validate_match_role(record):
+    if record['role'] == 'zero-match' and record['matches']:
+        raise ValueError('zero-match candidate selected commits; replace and retain this attempt')
+
+
+def freeze(repo, candidates_path, destination, shape_manifest=None, jobs=1, resume=False):
+    if jobs < 1:
+        raise ValueError('jobs must be positive')
+    if resume and shape_manifest is not None:
+        raise ValueError('resume uses the retained checkpoint shape; omit --shape-manifest')
     candidates = json.loads(candidates_path.read_text())
     for candidate in candidates:
         needle = bytes.fromhex(candidate['hex'])
@@ -287,32 +369,99 @@ def freeze(repo, candidates_path, destination, shape_manifest=None):
                 (role == 'newline' and b'\n' not in needle) or
                 (role == 'unicode' and not any(ord(ch) > 127 for ch in needle.decode('utf-8')))):
             raise ValueError('needle does not meet its declared role: ' + c['id'])
-    shape = inspect(repo, shape_manifest)
-    destination.mkdir()  # Never overwrite previously frozen evidence.
+    previous = None
+    if resume:
+        if (destination / 'manifest.json').exists():
+            raise ValueError('freeze already completed; use reproduce instead')
+        previous_raw = (destination / 'manifest.partial.json').read_bytes()
+        previous = json.loads(previous_raw)
+        shape = validate_shape(repo, previous['shape'])
+    else:
+        shape = inspect(repo, shape_manifest)
+        destination.mkdir()  # Never overwrite previously frozen evidence.
     manifest = dict(schema=1, qualification=False, shape=shape, needles=[],
                     git_path=GIT, git_sha256=digest(GIT),
                     git_build=git(repo, 'version', '--build-options').decode(),
                     environment=selected_environment(),
-                    source_sha256=digest(__file__), candidates_sha256=digest(candidates_path))
-    for candidate in candidates:
-        print('freeze', repo, candidate['id'], flush=True)
-        record = reference(repo, bytes.fromhex(candidate['hex']), destination / candidate['id'])
-        print(record, flush=True)
-        manifest['needles'].append(dict(candidate, **record))
+                    source_sha256=digest(__file__), candidates_sha256=digest(candidates_path),
+                    jobs=jobs, method='untimed reference preparation', reproduced=[])
+    originals, reproduced = {}, set()
+    if previous is not None:
+        for key in ['schema', 'git_path', 'git_sha256', 'git_build', 'environment', 'candidates_sha256']:
+            if manifest[key] != previous[key]:
+                raise ValueError('checkpoint input changed: ' + key)
+        definitions = {candidate['id']: candidate for candidate in candidates}
+        for record in previous['needles']:
+            name = record['id']
+            if name not in definitions or name in originals or record['status'] != 0:
+                raise ValueError('checkpoint has unknown/duplicate/unsuccessful query')
+            if any(record[key] != value for key, value in definitions[name].items()):
+                raise ValueError('checkpoint needle changed')
+            actual = capture_record(destination / name, record['status'])
+            if actual != {key: record[key] for key in actual}:
+                raise ValueError('checkpoint capture changed: ' + name)
+            validate_match_role(record)
+            originals[name] = record
+        for name in previous.get('reproduced', []):
+            if name not in originals or name in reproduced:
+                raise ValueError('checkpoint reproduction has no unique original')
+            output = destination / (name + '-reproduced')
+            compare_record(originals[name], capture_record(output, 0), destination / name, output)
+            reproduced.add(name)
+        backup = Path(tempfile.mkdtemp(prefix='resume-', dir=destination))
+        (backup / 'manifest.partial.json').write_bytes(previous_raw)
+        for candidate in candidates:
+            name = candidate['id']
+            pending = ([name] if name not in originals else [])
+            pending += ([name + '-reproduced'] if name not in reproduced else [])
+            for base in pending:
+                for extension in ['.stdout', '.stderr']:
+                    path = (destination / base).with_suffix(extension)
+                    if path.exists():
+                        path.rename(backup / path.name)
+        manifest['resumed_from'] = previous.get('resumed_from', []) + [dict(
+            directory=backup.name, manifest_sha256=hashlib.sha256(previous_raw).hexdigest(),
+            source_sha256=previous['source_sha256'], reused_originals=sorted(originals),
+            reused_reproductions=sorted(reproduced))]
+
+    def checkpoint():
+        manifest['needles'] = [originals[c['id']] for c in candidates if c['id'] in originals]
+        manifest['reproduced'] = [c['id'] for c in candidates if c['id'] in reproduced]
         save(destination / 'manifest.partial.json', manifest)
+
+    def original_completed(candidate, record):
+        print('captured', candidate['id'], record, flush=True)
+        originals[candidate['id']] = dict(candidate, **record)
+        checkpoint()
         if record['status']:
             raise ValueError('reference failed; partial attempt retained')
-        if candidate['role'] == 'zero-match' and record['matches']:
-            raise ValueError('zero-match candidate selected commits; replace and retain this attempt')
+        validate_match_role(originals[candidate['id']])
+
+    checkpoint()
+    capture_batch(repo, [c for c in candidates if c['id'] not in originals],
+                  destination, jobs, original_completed)
     common = [c['matches'] for c in manifest['needles'] if c['role'] == 'common']
     rare = [c['matches'] for c in manifest['needles'] if c['role'] == 'rare']
     if not min(rare) > 0 or not min(common) > max(rare):
         raise ValueError('common/rare candidates unsuitable; replace and retain this attempt')
     # Re-run exactly the reference search; compare every byte outside any timing interval.
-    for candidate in manifest['needles']:
+    def reproduction_completed(candidate, result):
         output = destination / (candidate['id'] + '-reproduced')
-        result = reference(repo, bytes.fromhex(candidate['hex']), output)
-        compare_record(candidate, result, destination / candidate['id'], output)
+        compare_record(originals[candidate['id']], result, destination / candidate['id'], output)
+        reproduced.add(candidate['id'])
+        checkpoint()
+        print('reproduced', candidate['id'], flush=True)
+
+    capture_batch(repo, [c for c in candidates if c['id'] not in reproduced],
+                  destination, jobs, reproduction_completed, suffix='-reproduced')
+    for candidate in manifest['needles']:
+        validate_match_role(candidate)
+        original = destination / candidate['id']
+        actual = capture_record(original, candidate['status'])
+        if actual != {key: candidate[key] for key in actual}:
+            raise ValueError('retained original changed: ' + candidate['id'])
+        output = destination / (candidate['id'] + '-reproduced')
+        compare_record(candidate, capture_record(output, 0), original, output)
     validate_shape(repo, shape)
     if digest(__file__) != manifest['source_sha256']:
         raise ValueError('tool source changed during freeze')
@@ -366,6 +515,8 @@ def main():
     p.add_argument('--output-dir', type=Path, required=True)
     p.add_argument('--shape-manifest', type=Path,
                    help='reuse the prepared shape instead of repeating full history characterization')
+    p.add_argument('--jobs', type=int, default=1, help='parallel readers for untimed query preparation only')
+    p.add_argument('--resume', action='store_true', help='verify and reuse a retained partial freeze')
     p = commands.add_parser('reproduce')
     p.add_argument('--repo', type=Path, required=True)
     p.add_argument('--frozen', type=Path, required=True)
@@ -376,13 +527,21 @@ def main():
     elif args.command == 'prepare':
         prepare(args.root, args.name)
     elif args.command == 'freeze':
-        freeze(args.repo.resolve(), args.candidates, args.output_dir, args.shape_manifest)
+        freeze(args.repo.resolve(), args.candidates, args.output_dir, args.shape_manifest, args.jobs, args.resume)
     else:
         reproduce(args.repo.resolve(), args.frozen, args.output_dir)
 
 
+def terminate_preparation(signum, frame):
+    raise InterruptedError('benchmark preparation interrupted by SIGTERM')
+
+
 if __name__ == '__main__':
+    previous_sigterm = signal.signal(signal.SIGTERM, terminate_preparation)
     try:
-        main()
-    except (ValueError, subprocess.CalledProcessError) as error:
-        sys.exit(str(error))
+        try:
+            main()
+        except (ValueError, subprocess.CalledProcessError, InterruptedError) as error:
+            sys.exit(str(error))
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)

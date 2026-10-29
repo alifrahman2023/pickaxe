@@ -172,18 +172,22 @@ class CommandStreaming(unittest.TestCase):
 
 
 class BenchmarkWorkloads(unittest.TestCase):
+    def make_history(self, root, contents):
+        repo = root / 'repo'
+        subprocess.run(['git', 'init', '-q', '-b', 'benchmark', str(repo)], check=True)
+        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+        env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_AUTHOR_NAME='Fixture', GIT_AUTHOR_EMAIL='fixture@example.invalid',
+                   GIT_COMMITTER_NAME='Fixture', GIT_COMMITTER_EMAIL='fixture@example.invalid')
+        for content in contents:
+            (repo / 'file').write_bytes(content)
+            subprocess.run(['git', 'add', 'file'], cwd=repo, env=env, check=True)
+            subprocess.run(['git', 'commit', '-qm', 'fixture'], cwd=repo, env=env, check=True)
+        return repo, env
+
     def test_inspect_complete_history_and_blob_volume(self):
         with tempfile.TemporaryDirectory() as directory:
-            repo = Path(directory) / 'repo'
-            subprocess.run(['git', 'init', '-q', '-b', 'benchmark', str(repo)], check=True)
-            env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
-            env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
-                       GIT_AUTHOR_NAME='Fixture', GIT_AUTHOR_EMAIL='fixture@example.invalid',
-                       GIT_COMMITTER_NAME='Fixture', GIT_COMMITTER_EMAIL='fixture@example.invalid')
-            for content in [b'first\n', b'second\n']:
-                (repo / 'file').write_bytes(content)
-                subprocess.run(['git', 'add', 'file'], cwd=repo, env=env, check=True)
-                subprocess.run(['git', 'commit', '-qm', 'fixture'], cwd=repo, env=env, check=True)
+            repo, env = self.make_history(Path(directory), [b'first\n', b'second\n'])
             subprocess.run(['git', '-C', str(repo), 'repack', '-ad'], env=env, check=True)
             output = Path(directory) / 'shape.json'
             result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
@@ -246,16 +250,7 @@ class BenchmarkWorkloads(unittest.TestCase):
     def test_freeze_preserves_newline_bytes_and_reproduces_reference(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            repo = root / 'repo'
-            subprocess.run(['git', 'init', '-q', '-b', 'benchmark', str(repo)], check=True)
-            env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
-            env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
-                       GIT_AUTHOR_NAME='Fixture', GIT_AUTHOR_EMAIL='fixture@example.invalid',
-                       GIT_COMMITTER_NAME='Fixture', GIT_COMMITTER_EMAIL='fixture@example.invalid')
-            for content in [b'common-common\nalpha\nbeta\n', b'unique-a unique-b\n']:
-                (repo / 'file').write_bytes(content)
-                subprocess.run(['git', 'add', 'file'], cwd=repo, env=env, check=True)
-                subprocess.run(['git', 'commit', '-qm', 'fixture'], cwd=repo, env=env, check=True)
+            repo, env = self.make_history(root, [b'common-common\nalpha\nbeta\n', b'unique-a unique-b\n'])
             values = [('common', b'common'), ('common', b'common-'),
                       ('rare', b'unique-a'), ('rare', b'unique-b'),
                       ('zero-match', b'zero-a'), ('zero-match', b'zero-b'),
@@ -265,28 +260,119 @@ class BenchmarkWorkloads(unittest.TestCase):
             candidates = root / 'candidates.json'
             candidates.write_text(json.dumps([dict(id='q' + str(i), role=role, hex=value.hex())
                                               for i, (role, value) in enumerate(values)]))
+            wrapper_dir = root / 'bin'
+            wrapper_dir.mkdir()
+            real_git = subprocess.check_output(['which', 'git'], text=True).strip()
+            wrapper = wrapper_dir / 'git'
+            calls, skip_completed = root / 'calls', root / 'skip-completed'
+            wrapper.write_text('#!' + sys.executable + '\nimport os, sys, time\nfrom pathlib import Path\n'
+                               'calls = Path(' + repr(str(calls)) + ')\n'
+                               'if sys.argv[1:4] == ["--no-pager", "log", "--all"]:\n'
+                               ' if Path(' + repr(str(skip_completed)) + ').exists() and "-Scommon-" in sys.argv:\n'
+                               '  sys.exit("completed query rerun")\n'
+                               ' fd = os.open(calls, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)\n'
+                               ' os.write(fd, b"query\\n"); os.close(fd)\n'
+                               ' deadline = time.monotonic() + 3\n'
+                               ' while calls.read_bytes().count(b"\\n") < 2:\n'
+                               '  if time.monotonic() > deadline: sys.exit("queries were not parallel")\n'
+                               '  time.sleep(0.01)\n'
+                               'os.execv(' + repr(real_git) + ', [' + repr(real_git) + ', *sys.argv[1:]])\n')
+            wrapper.chmod(0o755)
+            env['PATH'] = str(wrapper_dir) + os.pathsep + os.environ['PATH']
             output = root / 'output'
-            result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
-                                     'freeze', '--repo', str(repo), '--candidates', str(candidates),
-                                     '--output-dir', str(output)], capture_output=True)
+            freeze_command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                              'freeze', '--repo', str(repo), '--candidates', str(candidates),
+                              '--output-dir', str(output), '--jobs', '2']
+            result = subprocess.run(freeze_command, env=env, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             needles = json.loads((output / 'manifest.json').read_text())['needles']
             self.assertEqual([n['matches'] for n in needles], [2, 2, 1, 1, 0, 0, 2, 2, 0, 1, 0, 2])
+            checkpoint = json.loads((output / 'manifest.partial.json').read_text())
+            checkpoint['needles'] = [n for n in checkpoint['needles'] if n['id'] != 'q0']
+            checkpoint['reproduced'] = [name for name in checkpoint['reproduced'] if name != 'q0']
+            (output / 'manifest.partial.json').write_text(json.dumps(checkpoint))
+            (output / 'manifest.json').unlink()
+            (output / 'q0.stdout').write_bytes(b'interrupted capture\n')
+            skip_completed.touch()
+            result = subprocess.run(freeze_command + ['--resume'], env=env, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            resumed = json.loads((output / 'manifest.json').read_text())
+            backup = output / resumed['resumed_from'][-1]['directory']
+            self.assertEqual((backup / 'q0.stdout').read_bytes(), b'interrupted capture\n')
+            self.assertEqual(resumed['needles'], needles)
             reference = subprocess.check_output(['git', '--no-pager', 'log', '--all', '-Salpha\nbeta', '--'],
                                                 cwd=repo, env=env)
             self.assertEqual((output / 'q11.stdout').read_bytes(), reference)
             reproduced = root / 'reproduced'
             command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'), 'reproduce',
                        '--repo', str(repo), '--frozen', str(output), '--output-dir', str(reproduced)]
-            result = subprocess.run(command, capture_output=True)
+            skip_completed.unlink()
+            unsuitable = root / 'unsuitable.json'
+            invalid_needles = json.loads(candidates.read_text())
+            invalid_needles[4]['hex'] = b'common'.hex()
+            unsuitable.write_text(json.dumps(invalid_needles))
+            invalid_freeze = list(freeze_command)
+            invalid_freeze[invalid_freeze.index('--candidates') + 1] = str(unsuitable)
+            invalid_freeze[invalid_freeze.index('--output-dir') + 1] = str(root / 'unsuitable')
+            result = subprocess.run(invalid_freeze, env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            result = subprocess.run(invalid_freeze + ['--resume'], env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0, 'resume accepted a matching zero-match candidate')
+            self.assertFalse((root / 'unsuitable/manifest.json').exists())
+            result = subprocess.run(command, env=env, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads((reproduced / 'verified.json').read_text())['byte_comparisons'], 24)
             (output / 'q0.stdout').write_bytes(b'changed retained output\n')
             command[-1] = str(root / 'tampered')
-            result = subprocess.run(command, capture_output=True)
+            result = subprocess.run(command, env=env, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b'reference bytes did not reproduce', result.stderr)
             self.assertFalse((root / 'tampered/verified.json').exists())
+
+    def test_parent_sigterm_stops_parallel_git_readers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, env = self.make_history(root, [b'fixture\n'])
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            real_git = subprocess.check_output(['which', 'git'], text=True).strip()
+            ready = root / 'readers'
+            wrapper = bin_dir / 'git'
+            wrapper.write_text('#!' + sys.executable + '\nimport os, sys\n'
+                               'if sys.argv[1:4] == ["--no-pager", "log", "--all"]:\n'
+                               ' fd = os.open(' + repr(str(ready)) + ', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)\n'
+                               ' os.write(fd, (str(os.getpid()) + "\\n").encode()); os.close(fd)\n'
+                               ' os.read(0, 1)\n'
+                               'os.execv(' + repr(real_git) + ', [' + repr(real_git) + ', *sys.argv[1:]])\n')
+            wrapper.chmod(0o755)
+            env['PATH'] = str(bin_dir) + os.pathsep + os.environ['PATH']
+            process = subprocess.Popen([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                                        'freeze', '--repo', str(repo), '--candidates',
+                                        str(CHECK.ROOT / 'benchmarks/git-needles.json'),
+                                        '--output-dir', str(root / 'output'), '--jobs', '2'],
+                                       env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+            readers = []
+            try:
+                deadline = time.monotonic() + 5
+                while len(readers) < 2:
+                    self.assertLess(time.monotonic(), deadline, 'parallel Git readers did not become ready')
+                    if ready.exists():
+                        readers = [int(pid) for pid in ready.read_text().splitlines()]
+                    time.sleep(0.01)
+                process.terminate()
+                process.wait(timeout=5)
+                self.assertNotEqual(process.returncode, 0)
+                for pid in readers:
+                    with self.assertRaises(ProcessLookupError, msg='reader survived parent SIGTERM'):
+                        os.kill(pid, 0)
+                self.assertFalse((root / 'output/manifest.json').exists())
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=5)
 
     def test_freeze_reserves_reproduction_capture_names(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,7 +1,7 @@
 # Ticket #23: frozen benchmark workloads
 
-Work in progress. This report will record measured completion evidence before
-#23 closes or #24 begins. Scope: R14 / AC3 of specification #15 and the canonical
+Work in progress for #23 only. This report will record measured completion
+evidence before #23 closes. The owner stopped scope at #23; #24 remains unstarted. Scope: R14 / AC3 of specification #15 and the canonical
 benchmark resolution in #5. No acceleration or capacity claim follows from
 preparing these source histories.
 
@@ -239,5 +239,58 @@ After the latency correction, the full shared Release checks passed again:
 **42 suite checks and 21 tool/validator tests**, no skips. The source-pinned
 archive was refreshed to that successful run; earlier versions remain in Git
 history and local attempt directories. The large datasets are absent from the
-ordinary test loop: four tiny workload-tool tests exercise the relevant CLI
+ordinary test loop: five tiny workload-tool tests exercise the relevant CLI
 behavior without downloads or Linux history enumeration.
+
+
+## Untimed parallel capture and retained checkpoints
+
+The first Linux primary query (`return`) completed successfully with 332,656
+matches and 290,880,503 stdout bytes. Its exact original stream and checkpoint
+are retained. Before the next query completed, the sequential process was
+stopped at that checkpoint to enable two independent Git readers for the
+remaining **untimed preparation**, not performance measurement. No #24 tooling
+or measurements have been started, following the owner's narrowed scope.
+
+`freeze --jobs 2` bounds concurrent preparation readers; each query writes its
+own raw files. Captures are placed in the manifest's declared needle order,
+regardless of completion order. The reproduction phase still runs complete
+reference searches and compares stdout/stderr bytes. These concurrent runs
+must not be reported as foreground latency measurements.
+
+`freeze --resume` validates repository/object identity, selected Git executable,
+build/config/environment, exact candidate bytes and every retained successful
+capture before reusing it. It preserves the prior checkpoint, its hash/source
+identity and reused query IDs. Unfinished output files move to a separate
+`resume-*` directory before retry, retaining interrupted data. Completed
+reproduction records are reused only after their raw files compare to originals.
+The tool rechecks every retained stream and all repository inputs before a
+completed manifest is written. Checkpoint replacement is atomic for visibility;
+no power-loss durability guarantee is claimed for this development evidence.
+
+```sh
+python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-B --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen --resume --jobs 2
+```
+
+Tiny CLI fixtures require two queries to overlap, prohibit rerunning a completed
+query on resume, preserve an interrupted stream and check exact counts/newline
+bytes. Active readers are owned and terminated on capture-batch failure, and
+queued captures are cancelled. No experimental acceleration or product index
+resource is introduced.
+
+
+Independent review of parallel/resumed preparation found two P2 edge cases.
+A resumed, rejected zero-match candidate could bypass its role check; role
+validation now applies to retained, new and final records. Parent-only SIGTERM
+could bypass reader cleanup; it now raises through cancellation, including
+capture submission. Red→green CLI checks reproduced both failures and now
+verify rejection/no completed manifest and termination of two blocked readers.
+All five workload tooling tests passed. The actual retained `return` capture is
+successful and unaffected by either fixture-only failure scenario.
+
+
+Both review findings were confirmed fixed with no outstanding Standards or Spec
+finding. The final orchestration revision passed the full shared Release build:
+**42 suite checks and 22 tool/validator tests**, no skips. Its source-pinned
+archive supersedes the earlier checkpoint archive at the same path; historical
+versions remain in Git and local attempt directories. #24 remains unstarted.
