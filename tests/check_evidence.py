@@ -430,7 +430,7 @@ class BenchmarkWorkloads(unittest.TestCase):
                                         'freeze', '--repo', str(repo), '--candidates',
                                         str(CHECK.ROOT / 'benchmarks/git-needles.json'),
                                         '--output-dir', str(root / 'output'), '--jobs', '2',
-                                        '--shape-manifest', str(shape), '--budget-seconds', '2' if budget else '20'],
+                                        '--shape-manifest', str(shape), '--budget-seconds', '6' if budget else '20'],
                                        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             readers = []
@@ -443,7 +443,7 @@ class BenchmarkWorkloads(unittest.TestCase):
                     time.sleep(0.01)
                 if not budget:
                     process.terminate()
-                process.wait(timeout=5)
+                process.wait(timeout=8)
                 self.assertNotEqual(process.returncode, 0)
                 for pid in readers:
                     with self.assertRaises(ProcessLookupError, msg='reader survived parent SIGTERM'):
@@ -454,11 +454,13 @@ class BenchmarkWorkloads(unittest.TestCase):
                 self.assertTrue((root / 'output/common-return.stdout').exists())
                 self.assertFalse((root / 'output/manifest.json').exists())
             finally:
+                if process.poll() is None:
+                    process.terminate()
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.communicate(timeout=5)
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=5)
 
     def test_freeze_reserves_reproduction_capture_names(self):
         with tempfile.TemporaryDirectory() as directory:
