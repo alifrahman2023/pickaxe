@@ -48,9 +48,10 @@ streams, sequential paired ordering, five-sample summaries, nonzero command
 status, blocked-reader budget cancellation, and changed saved-output rejection.
 No Linux traversal is part of this test loop.
 
-Real-corpus measurements and the final check archive are pending the completed
-review and fixture check run. The intended real run has 18 Git commands and a
-30-minute total execution ceiling. No Pickaxe timing or Linux run is scheduled.
+The final shared `python3 scripts/check.py run` passed **42 suite checks and
+30 tool/validator tests**, with no skips. Its source-pinned archive is retained at
+`evidence/ticket-24-checks.json.gz`. Real Git measurements use 18 commands under
+a 30-minute total execution ceiling. No Pickaxe timing or Linux run is scheduled.
 
 
 Independent Standards and Spec review identified launch-cancellation ownership,
@@ -59,3 +60,38 @@ gaps. All four were fixed and re-reviewed with no residual findings. Interrupted
 records retain actual status, duration, raw sizes and incomplete verification.
 Atomic final-manifest replacement is the terminal success boundary; subsequent
 signals do not revoke completed evidence.
+
+
+## Completed Git-only measurements
+
+The real run completed all **18 sequential Git commands**: three untimed
+warm-ups and fifteen measured warm samples. Every command returned status zero;
+every stdout/stderr stream matched the frozen reference, and every saved stream
+was rechecked before completion. No retries, Linux searches or Pickaxe timing
+were performed. The run stayed within the approved 1,800-second ceiling.
+
+- `common-return`: median **19.806718 s**, range 18.626918–29.593965 s (five warm samples).
+- `rare-subscribe`: median **12.888558 s**, range 11.891362–13.256925 s (five warm samples).
+- `zero-a`: median **14.574361 s**, range 12.678503–17.523885 s (five warm samples).
+
+The report interval, including initial metadata collection and final checks after
+input validation, was 295.009 seconds. It is not a per-query latency sample.
+Cold evidence remains unavailable. The host reports Apple M3, eight CPUs and
+16 GiB RAM. Workload/output device identities were recorded, but automatic
+storage type/SSD details were unavailable and are explicitly limited in the
+metadata. These are captured-output warm Git baselines
+on an interactive macOS desktop with uncontrolled background activity, not
+acceleration qualification, cold-cache results, or universal performance claims.
+
+Raw outputs and partial checkpoints remain locally under
+`build/benchmarks/git-baselines-ticket-24/`. The complete metadata, individual
+raw durations, statuses, hashes, exact commands, workload/ref/config/packing
+identities, OS/Git/Python/CPU/RAM/storage observations and method limitations
+are archived in `evidence/ticket-24.json.gz`. This gzip contains metadata rather
+than raw stdout/stderr; their paths and hashes are recorded. Its decompressed
+bytes were checked against the completed local manifest.
+
+This completes #24 for the owner-approved three-query Git subset. Original
+Linux/full-role evidence remains deferred. Both issues remain open for review,
+PR #53 stays draft, native dependencies remain intact, and no later ticket is
+started.
