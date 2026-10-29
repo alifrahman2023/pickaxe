@@ -142,3 +142,41 @@ The current in-flight Git capture started with the original tool source (commit
 manifest. Its selected IDs cannot collide. After reproduction completes, every
 original/reproduced stream will also be compared byte-for-byte, and that result
 will be recorded separately. Linux captures use the corrected source.
+
+
+A targeted Spec follow-up found a second reproducibility gap: Git's default
+user/system attribute files are separate from global/system gitconfig. The tool
+now records applicable external user, system and repository `info/attributes`
+paths with absent/present/disabled state and hashes, plus HOME/XDG values.
+Git expands `%(prefix)/etc/gitattributes` itself to identify its system path;
+no path is inferred from the macOS `/usr/bin/git` shim. A red CLI observation
+lacked this metadata; the corrected check detects creation of an info attribute
+file even though tracked checkout bytes remain unchanged. Initial/final audits
+protect corrected captures. The Spec reviewer confirmed this fix, and the
+suggested declared-environment and disabled-attribute handling are included.
+
+An additional fixture caught a JSON round-trip mismatch: in-memory largest-blob
+pairs were tuples while decoded manifest pairs were lists. The returned shape
+now uses JSON-stable lists. The reproduction CLI test passes and deliberately
+changed retained stdout fails without a completed verification record. Git's
+first audited attempt failed before launching queries due to that mismatch;
+its original successful freeze remains intact.
+
+The first Linux GitHub transfer failed with `curl 56` / connection reset / early
+EOF after approximately 2.1 GiB. Its incomplete temporary pack and failure record
+are retained in `build/benchmarks/failed-linux-acquisition/`, outside valid
+object storage; no incomplete object database is used as a workload. Acquisition
+is retrying from `https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux`
+with transient `http.version=HTTP/1.1`, the same pinned commit, no depth/filter,
+and actual source/transport recorded in `acquisition.json`. Preparation still
+requires a successful full fsck and closed ancestor traversal before use.
+
+For Git's original captures, `reproduce` re-executes every frozen query under
+initial/final dependency audits and directly compares both streams to retained
+original bytes. The resulting `verified.json` records its interval and current
+source/environment identities. It explicitly does not infer historical absence
+of attribute files from their later observed absence.
+
+```sh
+python3 scripts/benchmarks.py reproduce --repo build/benchmarks/git-B --frozen build/benchmarks/git-frozen --output-dir build/benchmarks/git-audited-reproduction
+```

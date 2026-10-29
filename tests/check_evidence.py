@@ -191,6 +191,13 @@ class BenchmarkWorkloads(unittest.TestCase):
             shape = json.loads(output.read_text())
             self.assertEqual((shape['commits'], shape['merges'], shape['root_commits'],
                               shape['unique_blob_bytes'], shape['unique_blobs']), (2, 0, 1, 13, 2))
+            self.assertEqual(shape['attributes']['repository']['state'], 'absent')
+            (repo / '.git/info/attributes').write_bytes(b'file -diff\n')
+            subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                            'inspect', '--repo', str(repo), '--output', str(output)], check=True)
+            changed = json.loads(output.read_text())
+            self.assertEqual(changed['attributes']['repository']['state'], 'present')
+            self.assertNotEqual(changed['attributes'], shape['attributes'])
             subprocess.run(['git', '-C', str(repo), 'branch', 'extra'], check=True)
             result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
                                      'inspect', '--repo', str(repo), '--output', str(output)],
@@ -230,6 +237,18 @@ class BenchmarkWorkloads(unittest.TestCase):
             reference = subprocess.check_output(['git', '--no-pager', 'log', '--all', '-Salpha\nbeta', '--'],
                                                 cwd=repo, env=env)
             self.assertEqual((output / 'q11.stdout').read_bytes(), reference)
+            reproduced = root / 'reproduced'
+            command = [sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'), 'reproduce',
+                       '--repo', str(repo), '--frozen', str(output), '--output-dir', str(reproduced)]
+            result = subprocess.run(command, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads((reproduced / 'verified.json').read_text())['byte_comparisons'], 24)
+            (output / 'q0.stdout').write_bytes(b'changed retained output\n')
+            command[-1] = str(root / 'tampered')
+            result = subprocess.run(command, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'reference bytes did not reproduce', result.stderr)
+            self.assertFalse((root / 'tampered/verified.json').exists())
 
     def test_freeze_reserves_reproduction_capture_names(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Frozen, local source-history workloads. Development tooling, not product indexing."""
 import argparse
+import datetime
 import filecmp
 import hashlib
 import heapq
@@ -32,6 +33,11 @@ def environment():
     return env
 
 
+def selected_environment():
+    return {k: v for k, v in environment().items()
+            if k.startswith('GIT_') or k in ['PATH', 'LC_ALL', 'TZ', 'HOME', 'XDG_CONFIG_HOME']}
+
+
 def git(repo, *args, **kwargs):
     return subprocess.run([GIT, '-C', str(repo), *args], env=environment(),
                           check=True, stdout=subprocess.PIPE, **kwargs).stdout
@@ -47,6 +53,32 @@ def digest(path):
 
 def save(path, value):
     Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+
+
+def attribute_inputs(repo, common):
+    system_path = os.fsdecode(git(repo, '-c', 'pickaxe.auditpath=%(prefix)/etc/gitattributes',
+                                 'config', '--path', '--get', 'pickaxe.auditpath').strip())
+    configured = subprocess.run([GIT, '-C', str(repo), 'config', '--path', '--get', 'core.attributesFile'],
+                                env=environment(), capture_output=True)
+    if configured.returncode not in (0, 1):
+        raise ValueError('cannot inspect configured attribute file')
+    user_path = (os.fsdecode(configured.stdout.strip()) if configured.returncode == 0 else
+                 str(Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'git/attributes'))
+    result = {}
+    for label, name in [('user', user_path), ('system', system_path),
+                        ('repository', str(common / 'info/attributes'))]:
+        if label == 'user' and configured.returncode == 0 and not user_path:
+            result[label] = dict(path=None, state='disabled')
+            continue
+        path = Path(name)
+        if not path.is_absolute():
+            path = repo / path
+        result[label] = dict(path=str(path.resolve()), state='absent')
+        if path.exists():
+            result[label].update(state='present', bytes=path.stat().st_size, sha256=digest(path))
+        elif path.is_symlink():
+            raise ValueError('broken attribute-file symlink: ' + str(path))
+    return result
 
 
 def inspect(repo):
@@ -113,10 +145,12 @@ def inspect(repo):
                 commits=commits, merges=merges, root_commits=roots, parent_edges=parent_edges,
                 max_parents=max_parents, reachable_objects=counts, reachable_bytes=sizes,
                 unique_blobs=counts.get('blob', 0), unique_blob_bytes=sizes.get('blob', 0),
-                largest_blobs=sorted(largest, reverse=True), total_objects=total,
+                largest_blobs=[list(item) for item in sorted(largest, reverse=True)], total_objects=total,
                 out_of_scope_objects=total - sum(counts.values()), packs=packs,
                 packed_object_bytes=sum(p['bytes'] for p in packs),
-                count_objects=git(repo, 'count-objects', '-v').decode(), config_hex=config.hex())
+                count_objects=git(repo, 'count-objects', '-v').decode(), config_hex=config.hex(),
+                attributes=attribute_inputs(repo, common),
+                home=os.environ.get('HOME'), xdg_config_home=os.environ.get('XDG_CONFIG_HOME'))
 
 
 def prepare(root, name):
@@ -127,6 +161,9 @@ def prepare(root, name):
     if not source.exists():
         raise ValueError(f'first: git init --bare {source}; git -C {source} fetch --no-tags {url} {b}')
     git(source, 'fsck', '--full', '--no-reflogs')
+    acquisition_path = source / 'acquisition.json'
+    acquisition = (json.loads(acquisition_path.read_text()) if acquisition_path.exists() else
+                   dict(source_url=url, transport='git fetch --no-tags URL PIN'))
     for label, oid in [('A', a), ('B', b)]:
         repo = root / (name + '-' + label)
         repo.mkdir()  # Refuse to overwrite any existing attempt.
@@ -143,7 +180,8 @@ def prepare(root, name):
         git(repo, 'reset', '--hard', oid)
         shape = inspect(repo)
         save(root / (name + '-' + label + '.json'), dict(
-            source_url=url, pinned_commit=oid, preparation='complete B fetch; private object copy; checkout A/B; no repack',
+            source_url=acquisition['source_url'], acquisition=acquisition, pinned_commit=oid,
+            preparation='complete B fetch; private object copy; checkout A/B; no repack',
             shape=shape))
         print(name, label, shape['commits'], shape['unique_blob_bytes'], flush=True)
 
@@ -158,6 +196,14 @@ def reference(repo, needle, output):
     return dict(status=result.returncode, stdout_bytes=path.stat().st_size,
                 stdout_sha256=digest(path), stderr_sha256=digest(output.with_suffix('.stderr')),
                 matches=matches)
+
+
+def compare_record(expected, actual, original, reproduced):
+    if actual != {key: expected[key] for key in actual}:
+        raise ValueError('reference output did not reproduce: ' + str(original))
+    for suffix in ['.stdout', '.stderr']:
+        if not filecmp.cmp(original.with_suffix(suffix), reproduced.with_suffix(suffix), shallow=False):
+            raise ValueError('reference bytes did not reproduce: ' + str(original))
 
 
 def freeze(repo, candidates_path, destination):
@@ -190,8 +236,7 @@ def freeze(repo, candidates_path, destination):
     manifest = dict(schema=1, qualification=False, shape=shape, needles=[],
                     git_path=GIT, git_sha256=digest(GIT),
                     git_build=git(repo, 'version', '--build-options').decode(),
-                    environment={k: v for k, v in environment().items()
-                                 if k.startswith('GIT_') or k in ['PATH', 'LC_ALL', 'TZ']},
+                    environment=selected_environment(),
                     source_sha256=digest(__file__), candidates_sha256=digest(candidates_path))
     for candidate in candidates:
         print('freeze', repo, candidate['id'], flush=True)
@@ -211,16 +256,45 @@ def freeze(repo, candidates_path, destination):
     for candidate in manifest['needles']:
         output = destination / (candidate['id'] + '-reproduced')
         result = reference(repo, bytes.fromhex(candidate['hex']), output)
-        if result != {k: candidate[k] for k in result}:
-            raise ValueError('reference output did not reproduce: ' + candidate['id'])
-        for suffix in ['.stdout', '.stderr']:
-            if not filecmp.cmp((destination / candidate['id']).with_suffix(suffix),
-                               output.with_suffix(suffix), shallow=False):
-                raise ValueError('reference bytes did not reproduce: ' + candidate['id'])
+        compare_record(candidate, result, destination / candidate['id'], output)
     if inspect(repo) != shape:
         raise ValueError('repository changed during freeze')
+    if digest(__file__) != manifest['source_sha256']:
+        raise ValueError('tool source changed during freeze')
     save(destination / 'manifest.json', manifest)
     print('frozen and reproduced', destination, flush=True)
+
+
+def reproduce(repo, frozen, destination):
+    manifest_path = frozen / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    source_hash, manifest_hash = digest(__file__), digest(manifest_path)
+    profile = selected_environment()
+    if any(profile.get(key) != value for key, value in manifest['environment'].items()):
+        raise ValueError('environment differs from frozen inputs')
+    shape = inspect(repo)
+    if any(shape[key] != value for key, value in manifest['shape'].items()):
+        raise ValueError('repository differs from frozen inputs')
+    if manifest['git_path'] != GIT or manifest['git_sha256'] != digest(GIT):
+        raise ValueError('Git differs from frozen executable')
+    destination.mkdir()
+    started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for candidate in manifest['needles']:
+        if not re.fullmatch(r'[a-z0-9-]+', candidate['id']):
+            raise ValueError('unsafe needle id')
+        print('reproduce', repo, candidate['id'], flush=True)
+        result = reference(repo, bytes.fromhex(candidate['hex']), destination / candidate['id'])
+        compare_record(candidate, result, frozen / candidate['id'], destination / candidate['id'])
+    if inspect(repo) != shape:
+        raise ValueError('repository changed during reproduction')
+    if digest(__file__) != source_hash or digest(manifest_path) != manifest_hash:
+        raise ValueError('tool source or frozen manifest changed during reproduction')
+    save(destination / 'verified.json', dict(
+        frozen_manifest_sha256=manifest_hash, source_sha256=source_hash, environment=profile,
+        started_at=started, completed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        shape=shape, byte_comparisons=len(manifest['needles']) * 2,
+        note='Dependencies observed for this reproduction interval, not retroactively for original capture.'))
+    print('audited byte reproduction complete', destination, flush=True)
 
 
 def main():
@@ -236,13 +310,19 @@ def main():
     p.add_argument('--repo', type=Path, required=True)
     p.add_argument('--candidates', type=Path, required=True)
     p.add_argument('--output-dir', type=Path, required=True)
+    p = commands.add_parser('reproduce')
+    p.add_argument('--repo', type=Path, required=True)
+    p.add_argument('--frozen', type=Path, required=True)
+    p.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
     if args.command == 'inspect':
         save(args.output, inspect(args.repo))
     elif args.command == 'prepare':
         prepare(args.root, args.name)
-    else:
+    elif args.command == 'freeze':
         freeze(args.repo.resolve(), args.candidates, args.output_dir)
+    else:
+        reproduce(args.repo.resolve(), args.frozen, args.output_dir)
 
 
 if __name__ == '__main__':
