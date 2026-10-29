@@ -1,5 +1,6 @@
 """Evidence validator contract: incomplete or inconsistent runs cannot pass."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import selectors
@@ -167,6 +168,80 @@ class CommandStreaming(unittest.TestCase):
             self.assertEqual(process.returncode, 7)
             self.assertTrue((observed + tail).endswith(prefix + b'\ncomplete\n'))
             self.assertEqual(log.read_bytes(), prefix + b'\ncomplete\n')
+
+
+class BenchmarkWorkloads(unittest.TestCase):
+    def test_inspect_complete_history_and_blob_volume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / 'repo'
+            subprocess.run(['git', 'init', '-q', '-b', 'benchmark', str(repo)], check=True)
+            env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+            env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                       GIT_AUTHOR_NAME='Fixture', GIT_AUTHOR_EMAIL='fixture@example.invalid',
+                       GIT_COMMITTER_NAME='Fixture', GIT_COMMITTER_EMAIL='fixture@example.invalid')
+            for content in [b'first\n', b'second\n']:
+                (repo / 'file').write_bytes(content)
+                subprocess.run(['git', 'add', 'file'], cwd=repo, env=env, check=True)
+                subprocess.run(['git', 'commit', '-qm', 'fixture'], cwd=repo, env=env, check=True)
+            output = Path(directory) / 'shape.json'
+            result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                                     'inspect', '--repo', str(repo), '--output', str(output)],
+                                    capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            shape = json.loads(output.read_text())
+            self.assertEqual((shape['commits'], shape['merges'], shape['root_commits'],
+                              shape['unique_blob_bytes'], shape['unique_blobs']), (2, 0, 1, 13, 2))
+            subprocess.run(['git', '-C', str(repo), 'branch', 'extra'], check=True)
+            result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                                     'inspect', '--repo', str(repo), '--output', str(output)],
+                                    capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'exactly refs/heads/benchmark', result.stderr)
+
+    def test_freeze_preserves_newline_bytes_and_reproduces_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / 'repo'
+            subprocess.run(['git', 'init', '-q', '-b', 'benchmark', str(repo)], check=True)
+            env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+            env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                       GIT_AUTHOR_NAME='Fixture', GIT_AUTHOR_EMAIL='fixture@example.invalid',
+                       GIT_COMMITTER_NAME='Fixture', GIT_COMMITTER_EMAIL='fixture@example.invalid')
+            for content in [b'common-common\nalpha\nbeta\n', b'unique-a unique-b\n']:
+                (repo / 'file').write_bytes(content)
+                subprocess.run(['git', 'add', 'file'], cwd=repo, env=env, check=True)
+                subprocess.run(['git', 'commit', '-qm', 'fixture'], cwd=repo, env=env, check=True)
+            values = [('common', b'common'), ('common', b'common-'),
+                      ('rare', b'unique-a'), ('rare', b'unique-b'),
+                      ('zero-match', b'zero-a'), ('zero-match', b'zero-b'),
+                      ('single-byte', b'c'), ('two-byte', b'co'), ('long', b'x' * 90),
+                      ('spaces', b'unique-a unique-b'), ('unicode', 'é'.encode()),
+                      ('newline', b'alpha\nbeta')]
+            candidates = root / 'candidates.json'
+            candidates.write_text(json.dumps([dict(id='q' + str(i), role=role, hex=value.hex())
+                                              for i, (role, value) in enumerate(values)]))
+            output = root / 'output'
+            result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                                     'freeze', '--repo', str(repo), '--candidates', str(candidates),
+                                     '--output-dir', str(output)], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            needles = json.loads((output / 'manifest.json').read_text())['needles']
+            self.assertEqual([n['matches'] for n in needles], [2, 2, 1, 1, 0, 0, 2, 2, 0, 1, 0, 2])
+            reference = subprocess.check_output(['git', '--no-pager', 'log', '--all', '-Salpha\nbeta', '--'],
+                                                cwd=repo, env=env)
+            self.assertEqual((output / 'q11.stdout').read_bytes(), reference)
+
+    def test_freeze_rejects_empty_and_nul_argument_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for value in ['', '610062']:
+                candidates = root / 'candidates.json'
+                candidates.write_text(json.dumps([dict(id='invalid', role='long', hex=value)]))
+                result = subprocess.run([sys.executable, str(CHECK.ROOT / 'scripts/benchmarks.py'),
+                                         'freeze', '--repo', str(root), '--candidates', str(candidates),
+                                         '--output-dir', str(root / 'output')], capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'nonempty bytes without NUL', result.stderr)
 
 
 if __name__ == '__main__':
