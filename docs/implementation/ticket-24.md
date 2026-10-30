@@ -1,9 +1,10 @@
 # Ticket #24: reference-Git baselines
 
-The owner authorized co-implementation in draft PR #53, using #23's approved
-three-needle Git subset. Linux and the original full-role workload remain
-deferred. #23's native dependency edge stays intact while both issues remain
-open for review; no merge or later ticket is authorized by this work.
+**Status: complete for the owner-approved three-query Git scope.**
+This work used [#23's selected inputs](ticket-23.md) and shipped in
+[merged PR #53](https://github.com/alifrahman2023/pickaxe/pull/53). The original
+full Git/Linux workload and its reference baselines belong to
+[post-release issue #54](https://github.com/alifrahman2023/pickaxe/issues/54).
 
 ## Measurement protocol
 
@@ -48,8 +49,9 @@ streams, sequential paired ordering, five-sample summaries, nonzero command
 status, blocked-reader budget cancellation, and changed saved-output rejection.
 No Linux traversal is part of this test loop.
 
-The final shared `python3 scripts/check.py run` passed **42 suite checks and
-30 tool/validator tests**, with no skips. Its source-pinned archive is retained at
+An earlier shared `python3 scripts/check.py run` passed **42 suite checks and
+30 tool/validator tests**, with no skips. The final review-fix run is recorded
+below; its source-pinned archive is retained at
 `evidence/ticket-24-checks.json.gz`. Real Git measurements use 18 commands under
 a 30-minute total execution ceiling. No Pickaxe timing or Linux run is scheduled.
 
@@ -92,9 +94,8 @@ than raw stdout/stderr; their paths and hashes are recorded. Its decompressed
 bytes were checked against the completed local manifest.
 
 This completes #24 for the owner-approved three-query Git subset. Original
-Linux/full-role evidence remains deferred. Both issues remain open for review,
-PR #53 stays draft, native dependencies remain intact, and no later ticket is
-started.
+Linux/full-role evidence is assigned to post-release issue #54. PR #53 is
+merged; the measurements above remain limited to the three selected Git queries.
 
 
 ## Full-PR review fixes

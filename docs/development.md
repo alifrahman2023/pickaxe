@@ -123,23 +123,15 @@ stamps stay absent. Resume archives interrupted streams before retry. The limit
 never truncates history or output to satisfy the workload requirements. A small
 budget may expire during validation before any reader starts.
 
-The owner subsequently selected three already captured/reproduced Git needles
-and deferred Linux. The active subset is recorded in
+The owner selected three already captured/reproduced Git needles for the first
+release. The delivered subset is recorded in
 [the selected evidence](implementation/evidence/ticket-23-selected-git.json);
-its saved bytes were reverified without new history searches. No corpus job is
-scheduled. The original twelve-role freeze interface remains unchanged.
-
-For a separately approved future resumption of the original Linux protocol,
-this is the read-only preflight:
-
-```sh
-python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-B --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen --resume --jobs 2 --preflight
-```
-
-Add `--budget-seconds <approved-seconds>` and omit `--preflight` only after the
-budget decision. One completed query took about 16 minutes; the deferred original protocol
-still has 11 original queries and 12 reproductions pending, with unknown costs.
-#24 now uses only the approved three-needle Git subset; PR #53 stays draft. Before changing Git configuration or attribute capture, consult
+its saved bytes were reverified without new history searches. The original
+full Git/Linux workload and reference baselines are assigned to
+[post-release issue #54](https://github.com/alifrahman2023/pickaxe/issues/54).
+No corpus job is scheduled. The original twelve-role freeze interface remains
+available for that later work. Before changing Git configuration or attribute
+capture, consult
 [the eligibility input inventory](implementation/eligibility-inventory.md).
 
 ## Reference-Git baselines (#24)
@@ -148,7 +140,8 @@ still has 11 original queries and 12 reproductions pending, with unknown costs.
 its frozen/audited identities and saved bytes, and reuses the cached repository
 shape. `--preflight` lists the complete sequential schedule without searches or
 output files. Execution requires the same approved runtime budget as other
-expensive tooling. No Linux work is included in the current selection.
+expensive tooling. The delivered selection contains only Git queries; any
+post-release full-protocol run needs a separate approved plan and budget.
 
 ```sh
 python3 scripts/baselines.py --selection docs/implementation/evidence/ticket-23-selected-git.json --output-dir build/benchmarks/git-baselines --activity-note 'describe relevant current background activity' --preflight
