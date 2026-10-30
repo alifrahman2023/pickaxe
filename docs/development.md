@@ -94,3 +94,90 @@ Apply an existing approval when it covers the proposed action within the current
 scope. Ask only about a remaining gap or conflict. If a rule requires the
 question, name its source and explain the unresolved point. Approval for a test
 seam does not authorize a later ticket or change a merge/closure boundary.
+
+## Benchmark execution cost controls (#23)
+
+The normal check command above uses tiny fixtures. Benchmark `validate` (also
+spelled `inspect`) requires `--shape-manifest`: it checks repository inputs and
+object-file hashes and reuses the recorded graph metrics. Missing, incomplete or
+changed inputs fail; validation never falls back to a history walk. Full walks
+use the explicit `characterize` command. `prepare`, `characterize`, `freeze` and
+`reproduce` require an owner-approved positive `--budget-seconds` for execution.
+This wall-clock limit includes validation and final checks; cancellation has a
+short cleanup allowance to terminate and reap owned readers. The flag records a
+limit; it does not establish that the owner approved that limit.
+
+Before real-corpus freeze or reproduction, run the same command with
+`--preflight` and no budget. This read-only path validates cached inputs and
+retained completed streams, then prints every remaining reference command,
+needle bytes, output paths, reader count and observed write intervals/bytes.
+Write intervals are retrospective diagnostics, not benchmark samples or a
+prediction of remaining costs. Fresh `freeze` requires `--shape-manifest`;
+`freeze --resume` uses the retained checkpoint's shape instead.
+
+Agree the runtime **and agent-usage** budget before execution. Keep long jobs
+out of an active conversational polling loop: retain job logs and inspect once
+at the agreed boundary. On exhaustion, owned readers stop, queued readers are
+cancelled, completed checkpoints and interrupted raw files remain, and completion
+stamps stay absent. Resume archives interrupted streams before retry. The limit
+never truncates history or output to satisfy the workload requirements. A small
+budget may expire during validation before any reader starts.
+
+The owner subsequently selected three already captured/reproduced Git needles
+and deferred Linux. The active subset is recorded in
+[the selected evidence](implementation/evidence/ticket-23-selected-git.json);
+its saved bytes were reverified without new history searches. No corpus job is
+scheduled. The original twelve-role freeze interface remains unchanged.
+
+For a separately approved future resumption of the original Linux protocol,
+this is the read-only preflight:
+
+```sh
+python3 scripts/benchmarks.py freeze --repo build/benchmarks/linux-volume/linux-B --candidates benchmarks/linux-needles.json --output-dir build/benchmarks/linux-frozen --resume --jobs 2 --preflight
+```
+
+Add `--budget-seconds <approved-seconds>` and omit `--preflight` only after the
+budget decision. One completed query took about 16 minutes; the deferred original protocol
+still has 11 original queries and 12 reproductions pending, with unknown costs.
+#24 now uses only the approved three-needle Git subset; PR #53 stays draft. Before changing Git configuration or attribute capture, consult
+[the eligibility input inventory](implementation/eligibility-inventory.md).
+
+## Reference-Git baselines (#24)
+
+`python3 scripts/baselines.py` consumes the approved selected evidence, validates
+its frozen/audited identities and saved bytes, and reuses the cached repository
+shape. `--preflight` lists the complete sequential schedule without searches or
+output files. Execution requires the same approved runtime budget as other
+expensive tooling. No Linux work is included in the current selection.
+
+```sh
+python3 scripts/baselines.py --selection docs/implementation/evidence/ticket-23-selected-git.json --output-dir build/benchmarks/git-baselines --activity-note 'describe relevant current background activity' --preflight
+```
+
+For the three selected Git needles the schedule has 18 searches: one untimed
+warm-up and five measured warm runs per needle. Replace `--preflight` with
+`--budget-seconds <approved-seconds>` to execute into a fresh output directory.
+Stdout/stderr go to distinct regular files. The interval covers process startup
+through foreground completion; hashes, counts and byte comparisons happen
+outside timing. Raw values, statuses, identities, medians and ranges remain in
+`manifest.json`, with incomplete attempts retained as `manifest.partial.json`.
+A mismatch, cancellation or expiry retains raw streams and leaves completion
+absent. No automatic retries or concurrent timed searches are used.
+
+Optional `--pickaxe <executable>` adds one warm-up and five measurements for that
+implementation, alternating Git/Pickaxe order by sample and executing each
+command sequentially. It doubles the schedule, so review a new preflight and
+budget before paired corpus execution. It does not change the selected needles.
+Cold evidence is unavailable without a credible independent reset; a new process
+is not a cold run. Hashing input packs itself warms caches. Five samples support
+median/range reporting, not tail estimates or acceleration qualification.
+
+
+Captured commands share one process owner for preparation, reproduction and
+measurements. It protects creation/registration from cancellation, sends SIGTERM
+to every owned process group, then SIGKILL after a common half-second grace even
+if the leader already exited. Direct children are reaped before cleanup returns.
+For paired measurements, Pickaxe stdout/status must match the reference; its
+stderr diagnostics are retained and checked for later alteration, rather than
+required to equal Git's stderr. Git reproductions still require both streams to
+match exactly.

@@ -127,6 +127,21 @@ def execute(command, log):
             raise
 
 
+def source_hashes():
+    source_paths = [ROOT / 'CMakeLists.txt', ROOT / 'src/main.cpp']
+    source_paths += list((ROOT / 'tests').rglob('*.py')) + list((ROOT / 'scripts').glob('*.py'))
+    source_paths += list((ROOT / 'tests').rglob('*.cpp'))
+    source_paths += list((ROOT / '.github/workflows').glob('*.yml'))
+    sources = {p.relative_to(ROOT).as_posix(): sha256(p) for p in sorted(source_paths)}
+    return sources
+
+
+def unchanged_sources(sources):
+    current = source_hashes()
+    for path in sorted(sources.keys() | current.keys()):
+        require(current.get(path) == sources.get(path), f"changed source: {path}")
+
+
 def run(build):
     require(sys.platform == 'darwin', 'these process/PTY development checks currently require macOS')
     build = build.resolve()
@@ -134,11 +149,13 @@ def run(build):
     output.mkdir(parents=True, exist_ok=True)
     attempt = Path(tempfile.mkdtemp(prefix='run-', dir=output))
     print(f'Evidence attempt: {attempt}', flush=True)
+    sources = source_hashes()
     tool_inventory = expected_tests(ROOT / TOOL_TEST_SOURCE)
     tool_status = execute([sys.executable, str(ROOT / TOOL_TEST_SOURCE), '-v'],
                           attempt / 'tool-tests.log')
     tool_log = (attempt / 'tool-tests.log').read_text()
     verify_tool_tests(tool_status, tool_log, tool_inventory)
+    unchanged_sources(sources)
     commands = [
         ['cmake', '-S', str(ROOT), '-B', str(build), '-G', 'Unix Makefiles',
          '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_CXX_COMPILER=/usr/bin/clang++',
@@ -147,11 +164,6 @@ def run(build):
     ]
     for label, command in zip(('configure', 'build'), commands):
         require(execute(command, attempt / (label + '.log')) == 0, f'{label} failed; see {attempt}')
-    source_paths = [ROOT / 'CMakeLists.txt', ROOT / 'src/main.cpp']
-    source_paths += list((ROOT / 'tests').rglob('*.py')) + list((ROOT / 'scripts').glob('*.py'))
-    source_paths += list((ROOT / 'tests').rglob('*.cpp'))
-    source_paths += list((ROOT / '.github/workflows').glob('*.yml'))
-    sources = {p.relative_to(ROOT).as_posix(): sha256(p) for p in sorted(source_paths)}
     git = shutil.which('git')
     require(git is not None, 'Git missing on inherited PATH')
     git_hash, pk_hash = sha256(git), sha256(build / 'pk')
@@ -173,6 +185,7 @@ def run(build):
                   expected_tests={group: expected_tests(ROOT / path) for group, path in SUITES.items()},
                   records={group: [json.loads(p.read_text()) for p in sorted((attempt / group.replace('_', '-')).glob('*.json'))]
                            for group in SUITES})
+    unchanged_sources(sources)
     total = verify(bundle, current_sources=True)
     destination = attempt / 'checks.json.gz'
     raw = json.dumps(bundle, indent=2).encode() + b'\n'
