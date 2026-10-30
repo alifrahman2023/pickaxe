@@ -1,28 +1,26 @@
 # Ticket #23: frozen benchmark workloads
 
-The owner approved a reduced active workload: **three existing Git-history
-needles, with Linux deferred**. Selection and saved-byte verification are complete;
-see [the selected evidence](evidence/ticket-23-selected-git.json). This supersedes
-the earlier plan to resume the 23 remaining Linux searches. No new history
-searches were needed. The owner subsequently approved [#24 baseline work](ticket-24.md)
-in the same PR using this subset; PR #53 stays draft.
+**Status: complete for the owner-approved three-query Git scope.**
+Selection and saved-byte verification are recorded in
+[the selected evidence](evidence/ticket-23-selected-git.json). No new history
+searches were needed. [#24 baseline work](ticket-24.md) used this subset, and
+both tickets shipped in [merged PR #53](https://github.com/alifrahman2023/pickaxe/pull/53).
+The deferred original full Git/Linux workload belongs to
+[post-release issue #54](https://github.com/alifrahman2023/pickaxe/issues/54).
 
-The original R14 / AC3 two-repository, twelve-needle protocol remains incomplete;
-the existing full-workload archive retains `complete=false`. This report records
-the reduced result without claiming completion of those original checks. No
+The historical full-workload archive retains `complete=false`; the complete
+three-query selection has its own evidence record. This report does not claim
+completion of the post-release protocol. No
 acceleration or capacity claim follows from preparing these source histories.
 
-The branch `ticket/23-24-benchmark-baselines` starts at
-`9fa69c3ae626eb6cf4d8e4184e4764483eea0fa2`, the verified PR #52 merge.
-Local main was fast-forwarded to origin/main; the old branch and seven untracked
-local guidance files were preserved. Only named implementation files are staged.
-#22 was already closed when inspected. Its merged publication report and native
-#23 blocker edge remain intact; #21 is also closed. #23 was unassigned and was
-claimed before implementation. #24 remains blocked by #23.
+The historical branch `ticket/23-24-benchmark-baselines` started at
+`9fa69c3ae626eb6cf4d8e4184e4764483eea0fa2`, the PR #52 merge.
+The sections below retain the implementation sequence; earlier checkpoint
+statuses are historical, while this opening records the delivered scope.
 
 ## Preparation and reproduction
 
-The commands below record the original preparation. Current execution requires
+The commands below record the original preparation. Any new execution requires
 the [cost preflight and approved budget](../development.md#benchmark-execution-cost-controls-23);
 reuse the retained histories rather than repeating acquisition or preparation.
 
@@ -304,10 +302,11 @@ Both review findings were confirmed fixed with no outstanding Standards or Spec
 finding. The final orchestration revision passed the full shared Release build:
 **42 suite checks and 22 tool/validator tests**, no skips. Its source-pinned
 archive supersedes the earlier checkpoint archive at the same path; historical
-versions remain in Git and local attempt directories. #24 remains unstarted.
+versions remain in Git and local attempt directories. At this checkpoint,
+#24 had not started.
 
 
-## Execution controls and pending budget
+## Execution controls and historical pending budget
 
 The follow-up control slice separates cached `validate`/`inspect` from explicit
 `characterize`. Validation refuses missing or changed dependencies without a
@@ -339,9 +338,9 @@ re-reviewed with no residual findings. Tiny fixtures cover new/resumed preflight
 missing-budget refusal, exact reproduction plans and altered-stream refusal,
 budget expiry with two readers ignoring SIGTERM, and the source-body regression.
 
-No numeric runtime or agent-usage budget has been approved. The full-corpus job
-remains stopped, #23 incomplete, #24 unstarted, and PR #53 draft. The existing
-`ticket-23.json.gz` workload archive still has `complete=false`.
+At this checkpoint, no numeric runtime or agent-usage budget had been approved.
+The full-corpus job was stopped, #24 had not started, and PR #53 was draft. The
+historical `ticket-23.json.gz` workload archive still has `complete=false`.
 
 The final control revision passed `python3 scripts/check.py run`: **42 suite
 checks and 25 tool/validator tests**, no skips. Updated source-pinned evidence is
@@ -368,9 +367,9 @@ records exact needle bytes, counts, output hashes, source artifact paths and
 manifest identities in `evidence/ticket-23-selected-git.json`.
 
 No new history searches, acquisition, characterization or performance runs were
-started. Linux originals, interrupted outputs and checkpoints remain retained
-and deferred; no 30-minute job is scheduled. Future benchmark work within this
-reduced scope should use these three selected records. The original twelve-role
-`freeze` protocol is unchanged and is not the execution path for this saved
-subset. The full workload archive remains honestly incomplete; #23 stays open,
-PR #53 draft, and #24 unstarted.
+started for this selection. Linux originals, interrupted outputs and checkpoints
+remain retained for post-release issue #54. Future work using this reduced scope
+should use these three selected records. The original twelve-role `freeze`
+interface remains available for #54, but is not the execution path for this
+saved subset. The full workload archive remains honestly incomplete; the
+approved subset shipped in merged PR #53.
