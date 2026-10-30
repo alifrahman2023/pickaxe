@@ -111,3 +111,16 @@ Tiny regressions reproduce both lifecycle defects and exercise a paired process
 that emits Pickaxe's documented fallback diagnostic. The earlier real Git-only
 measurements and their source-pinned archive remain unchanged historical evidence;
 no corpus measurements were rerun for these fixes.
+
+
+The final review-fix revision passed the shared check: **42 suite checks and
+32 tool/validator tests**, no skips. Current source-pinned regression evidence
+replaces `evidence/ticket-24-checks.json.gz`; the original measurement archive
+remains unchanged. Standards and Spec re-review confirmed no residual findings.
+
+An earlier check attempt timed out in the unmodified containment suite. Its
+isolated verbose run passed all 16 tests in 7.670 seconds, and a fresh complete
+run passed with unchanged CTest limits (17.04 seconds for the three registered
+suites). The timeout did not reproduce; no cause is asserted. Failed attempts,
+including an earlier fixture-startup failure, remain under `build/checks/evidence/`
+and their logs under `build/tickets-23-24/context/`.
